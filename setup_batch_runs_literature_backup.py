@@ -1,4 +1,4 @@
-# setup_batch_runs_literature.py
+# setup_batch_runs.py (improved version)
 import os
 import shutil
 import argparse
@@ -229,7 +229,7 @@ def distribute_papers(
 
 def create_batch_script(
     run_dirs: List[str], 
-    script_name: str = "run_batch_literature.py",
+    script_name: str = "run_batch.py",
     custom_params: Dict[str, str] = None
 ):
     """Create a batch script to run all directories with custom parameters."""
@@ -258,7 +258,7 @@ def stream_output(process, prefix=""):
 
 def run_single_directory(run_dir):
     \"\"\"Run the review system for a single directory.\"\"\"
-    cmd = ["python", "run_review_with_dir_literature.py", "--run-dir", run_dir, "--literature-grounding"]
+    cmd = ["python", "run_review_with_dir.py", "--run-dir", run_dir]
     
     print(f"\\n{'='*60}")
     print(f"🚀 Processing Directory: {run_dir}")
@@ -380,7 +380,7 @@ if __name__ == "__main__":
     print(f"Created batch script: {script_name}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Set up batch run directories for literature-grounded reviews")
+    parser = argparse.ArgumentParser(description="Set up multiple run directories with papers from a master directory")
     parser.add_argument("--master-papers-dir", required=True, help="Directory containing all papers")
     parser.add_argument("--base-run-dir", required=True, help="Base name for run directories (e.g., 'run_dir')")
     parser.add_argument("--num-runs", type=int, required=True, help="Number of run directories to create")
@@ -393,7 +393,7 @@ def main():
                         help="Don't distribute papers evenly when insufficient papers")
     parser.add_argument("--create-batch-script", action="store_true", 
                         help="Create a batch script to run all directories")
-    parser.add_argument("--batch-script-name", default="run_batch_literature.py",
+    parser.add_argument("--batch-script-name", default="run_batch.py", 
                         help="Name of the batch script to create")
     
     # Custom parameters for batch script
