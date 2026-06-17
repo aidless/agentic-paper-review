@@ -54,9 +54,6 @@ test_literature_enhanced/
 test_literature_run/
 tests/
 
-# Internal docs
-3_Dir_Structure.md
-LITERATURE_GROUNDING_PLAN.md
 
 # Archives
 archive/
