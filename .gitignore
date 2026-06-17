@@ -49,9 +49,14 @@ fetch_arxiv_papers.py
 0_Specs_final.md
 0_Specs.md
 
-# Test caches
+# Test caches and dirs
 test_literature_enhanced/
 test_literature_run/
+tests/
+
+# Internal docs
+3_Dir_Structure.md
+LITERATURE_GROUNDING_PLAN.md
 
 # Archives
 archive/
