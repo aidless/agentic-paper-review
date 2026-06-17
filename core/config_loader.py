@@ -6,9 +6,9 @@ from typing import Dict, Any, List
 
 MODEL_DEFAULTS = {
     "extractor_provider": "openai",
-    "extractor_model": "gpt-5.4-mini",
+    "extractor_model": "gpt-5.4-nano",
     "synthesizer_provider": "openai",
-    "synthesizer_model": "gpt-5.4-mini",
+    "synthesizer_model": "gpt-5.4-nano",
     "judge_provider": "deepseek",
     "judge_model": "deepseek-v4-pro",
 }
