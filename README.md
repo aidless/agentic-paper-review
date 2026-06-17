@@ -67,7 +67,15 @@ JUDGE_PROVIDER=gemini
 JUDGE_MODEL=gemini-3.1-flash-lite
 ```
 
-### Run Your First Review
+### Option A: Web Dashboard (Recommended)
+
+```bash
+python web_app.py --port 8050
+```
+
+Open **http://localhost:8050** to configure models, edit criteria/prompts, run reviews, and view results — all from the browser. See [Web Dashboard](#web-dashboard) for details.
+
+### Option B: Command Line
 
 ```bash
 # 1. Set up a run directory
