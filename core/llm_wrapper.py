@@ -48,20 +48,24 @@ def resolve_max_tokens(provider: str, model: str, role: Optional[str] = None) ->
     """
     default_fallback = int(os.environ.get("TOKEN_LIMIT_DEFAULT", 16384))
 
+    model_string = f"{provider.strip()}/{model.strip()}"
+
     if role:
         env_key = f"MAX_TOKENS_{role.upper()}"
         env_val = os.environ.get(env_key)
         if env_val:
+            print(f"[TokenResolver] {model_string} → {env_val} (from {env_key})")
             return int(env_val)
 
-    model_string = f"{provider.strip()}/{model.strip()}"
     try:
         litellm_max = litellm.get_max_tokens(model_string)
         if litellm_max and litellm_max > 0:
+            print(f"[TokenResolver] {model_string} → {litellm_max} (litellm auto-detect)")
             return litellm_max
     except Exception:
         pass
 
+    print(f"[TokenResolver] {model_string} → {default_fallback} (fallback default)")
     return default_fallback
 
 
