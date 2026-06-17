@@ -35,7 +35,7 @@ from core.progress import (
 # Import llm_wrapper early so custom models are registered with litellm
 import core.llm_wrapper  # noqa: F401
 
-app = FastAPI(title="Academic Review System")
+app = FastAPI(title="Agentic Paper Review System")
 
 # Static files
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1029,13 +1029,13 @@ async def judge_status(run_id: str):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Academic Review System - Web Dashboard")
+    parser = argparse.ArgumentParser(description="Agentic Paper Review System - Web Dashboard")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
     parser.add_argument("--port", type=int, default=8050, help="Port to bind")
     args = parser.parse_args()
 
     import uvicorn
-    print(f"Starting Academic Review System dashboard on http://{args.host}:{args.port}")
+    print(f"Starting Agentic Paper Review System dashboard on http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port)
 
 

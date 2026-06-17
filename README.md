@@ -1,4 +1,4 @@
-# Agentic Academic Review System
+# Agentic Paper Review System
 
 A multi-agent LLM system for structured academic paper review. Ingests PDFs (and other formats), evaluates each paper against custom criteria, and produces scored reviews with optional cross-model adjudication and literature grounding.
 

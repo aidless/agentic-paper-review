@@ -1,5 +1,5 @@
 /**
- * Academic Review System - Dashboard Frontend
+ * Agentic Paper Review System - Dashboard Frontend
  */
 
 // State
