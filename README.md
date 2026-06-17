@@ -4,6 +4,7 @@ A multi-agent LLM system for structured academic paper review. Ingests PDFs (and
 
 
 **Full documentation:** https://c3.unu.edu/projects/ai/paperreview/userguide.html
+
 **Blog article:** https://c3.unu.edu/blog/from-months-to-days-ai-assisted-peer-review-with-human-oversight
 
 ## How It Works
