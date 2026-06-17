@@ -49,6 +49,12 @@ const sourcesSaveBtn = document.getElementById("sources-save-btn");
 const sourcesReloadBtn = document.getElementById("sources-reload-btn");
 const sourcesValidation = document.getElementById("sources-validation");
 const configSaveBtn = document.getElementById("config-save-btn");
+const costsEditor = document.getElementById("costs-editor");
+const costsSaveBtn = document.getElementById("costs-save-btn");
+const costsReloadBtn = document.getElementById("costs-reload-btn");
+const costsLookupBtn = document.getElementById("costs-lookup-btn");
+const costsValidation = document.getElementById("costs-validation");
+const costsLookupResult = document.getElementById("costs-lookup-result");
 const judgeBtn = document.getElementById("judge-btn");
 const viewVerdictsBtn = document.getElementById("view-verdicts-btn");
 const judgeModal = document.getElementById("judge-modal");
@@ -69,6 +75,9 @@ async function init() {
         tab.addEventListener("click", () => switchSidebarTab(tab.dataset.tab));
     });
 
+    // Collapsible config panel
+    document.getElementById("panel-toggle").addEventListener("click", toggleConfigPanel);
+
     // Prompt editor
     promptSelector.addEventListener("change", onPromptSelected);
     promptSaveBtn.addEventListener("click", savePrompt);
@@ -85,6 +94,11 @@ async function init() {
     // Config save
     configSaveBtn.addEventListener("click", saveConfig);
 
+    // Costs editor
+    costsSaveBtn.addEventListener("click", saveCosts);
+    costsReloadBtn.addEventListener("click", reloadCosts);
+    costsLookupBtn.addEventListener("click", lookupModelCost);
+
     // Judge
     judgeBtn.addEventListener("click", startJudge);
     judgeModalClose.addEventListener("click", () => judgeModal.style.display = "none");
@@ -93,6 +107,7 @@ async function init() {
     // Load global resources
     await loadPrompts();
     await loadSources();
+    await loadCosts();
 
     // Sort headers
     document.querySelectorAll("#results-table th[data-sort]").forEach(th => {
@@ -106,6 +121,14 @@ async function init() {
 
     // Refresh reports button
     document.getElementById("refresh-reports-btn").addEventListener("click", loadResults);
+
+    // Warn before leaving with unsaved changes
+    window.addEventListener("beforeunload", (e) => {
+        if (Object.keys(configDirty).length > 0) {
+            e.preventDefault();
+            e.returnValue = "";
+        }
+    });
 }
 
 // ---- API helpers ----
@@ -140,6 +163,22 @@ async function onRunSelected() {
     currentRunDir = runSelector.value;
     startBtn.disabled = !currentRunDir;
 
+    // Clear stale state from previous run
+    reportsData = [];
+    renderResults([]);
+    configDirty = {};
+    originalConfig = {};
+    configSaveBtn.style.display = "none";
+    logContent.innerHTML = "";
+    progressBar.style.width = "0%";
+    progressText.textContent = "";
+    progressEta.textContent = "";
+    costDisplay.textContent = "$0.00";
+    elapsedDisplay.textContent = "0s";
+    currentPaperDisplay.textContent = "";
+    clearStages();
+    if (viewVerdictsBtn) viewVerdictsBtn.style.display = "none";
+
     if (!currentRunDir) {
         configContent.innerHTML = '<p class="placeholder-text">Select a run directory to view config</p>';
         criteriaEditorWrap.innerHTML = '<p class="placeholder-text">Select a run directory to edit criteria</p>';
@@ -147,7 +186,6 @@ async function onRunSelected() {
     }
 
     // Load editable config
-    configDirty = {};
     await loadConfig();
 
     // Load criteria as raw YAML
@@ -202,21 +240,40 @@ async function stopRun() {
 
 // ---- SSE ----
 
+let sseReconnectAttempts = 0;
+const SSE_MAX_RECONNECT = 5;
+
 function connectSSE() {
     if (eventSource) eventSource.close();
+    sseReconnectAttempts = 0;
+    _openSSE();
+}
+
+function _openSSE() {
     eventSource = new EventSource(`/api/events/${currentRunId}`);
 
     eventSource.addEventListener("progress", (e) => {
+        sseReconnectAttempts = 0;
         try {
             const evt = JSON.parse(e.data);
             handleEvent(evt);
         } catch {}
     });
 
-    eventSource.addEventListener("ping", () => {});
+    eventSource.addEventListener("ping", () => {
+        sseReconnectAttempts = 0;
+    });
 
     eventSource.onerror = () => {
-        // Reconnect will happen automatically
+        eventSource.close();
+        eventSource = null;
+        sseReconnectAttempts++;
+        if (sseReconnectAttempts <= SSE_MAX_RECONNECT) {
+            addLog(`Connection lost — reconnecting (${sseReconnectAttempts}/${SSE_MAX_RECONNECT})...`, "warning");
+            setTimeout(_openSSE, 2000 * sseReconnectAttempts);
+        } else {
+            addLog("Connection lost. Refresh the page to reconnect.", "error");
+        }
     };
 }
 
@@ -335,8 +392,8 @@ function renderResults(results) {
         tr.innerHTML = `
             <td>${escapeHtml(r.paper || "")}</td>
             <td class="td-date">${escapeHtml(r.display_date || "")}</td>
-            <td class="td-model">${escapeHtml(r.extractor_model || "")}</td>
-            <td class="td-model">${escapeHtml(r.synthesizer_model || "")}</td>
+            <td class="td-model" title="${escapeHtml(r.extractor_model || "")}">${escapeHtml(r.extractor_model || "")}</td>
+            <td class="td-model" title="${escapeHtml(r.synthesizer_model || "")}">${escapeHtml(r.synthesizer_model || "")}</td>
             <td><span class="score-badge ${scoreClass}">${scoreVal != null && scoreVal !== "" ? Number(scoreVal).toFixed(1) : "-"}</span></td>
             <td><span class="rec-badge ${recClass}">${escapeHtml(r.recommendation || "-")}</span></td>
             <td>${r.total_cost != null && r.total_cost !== "" ? "$" + Number(r.total_cost).toFixed(4) : "-"}</td>
@@ -476,6 +533,14 @@ function renderMarkdown(text) {
 }
 
 // ---- Sidebar Tab Switching ----
+
+function toggleConfigPanel() {
+    const panel = document.getElementById("config-panel");
+    const btn = document.getElementById("panel-toggle");
+    panel.classList.toggle("collapsed");
+    btn.innerHTML = panel.classList.contains("collapsed") ? "&rsaquo;" : "&lsaquo;";
+    btn.title = panel.classList.contains("collapsed") ? "Expand panel" : "Collapse panel";
+}
 
 function switchSidebarTab(tabName) {
     document.querySelectorAll(".sidebar-tab").forEach(t => t.classList.remove("active"));
@@ -714,6 +779,59 @@ async function saveSources() {
 
 async function reloadSources() {
     await loadSources();
+}
+
+// ---- Model Costs Editor ----
+
+async function loadCosts() {
+    try {
+        const data = await api("/api/model-costs");
+        costsEditor.value = data.content || "";
+        costsValidation.textContent = "";
+    } catch {
+        costsEditor.value = "";
+        costsEditor.placeholder = "Could not load model costs";
+    }
+}
+
+async function saveCosts() {
+    costsValidation.textContent = "";
+    try {
+        await api("/api/model-costs", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: costsEditor.value }),
+        });
+        costsValidation.textContent = "Saved! Models re-registered with litellm.";
+        costsValidation.className = "validation-msg success";
+        addLog("Model costs saved and re-registered", "success");
+    } catch (e) {
+        costsValidation.textContent = e.message;
+        costsValidation.className = "validation-msg error";
+    }
+}
+
+async function reloadCosts() {
+    await loadCosts();
+}
+
+async function lookupModelCost() {
+    const modelName = prompt("Enter model name (e.g. openai/gpt-5.4-nano, anthropic/claude-sonnet-4-6):");
+    if (!modelName) return;
+    costsLookupResult.textContent = "Looking up...";
+    try {
+        const data = await api(`/api/model-costs/lookup/${encodeURIComponent(modelName)}`);
+        costsLookupResult.innerHTML =
+            `<strong>${escapeHtml(data.model)}</strong>: ` +
+            `Input $${data.input_cost_per_million}/M, ` +
+            `Output $${data.output_cost_per_million}/M` +
+            (data.max_input_tokens ? ` | Max in: ${(data.max_input_tokens / 1000).toFixed(0)}K` : "") +
+            (data.max_output_tokens ? `, out: ${(data.max_output_tokens / 1000).toFixed(0)}K` : "");
+        costsLookupResult.className = "lookup-result success";
+    } catch (e) {
+        costsLookupResult.textContent = e.message;
+        costsLookupResult.className = "lookup-result error";
+    }
 }
 
 // ---- Judge ----

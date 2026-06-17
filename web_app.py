@@ -32,11 +32,29 @@ from core.progress import (
     configure_emitter,
 )
 
+# Import llm_wrapper early so custom models are registered with litellm
+import core.llm_wrapper  # noqa: F401
+
 app = FastAPI(title="Academic Review System")
 
 # Static files
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "static")
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(PROJECT_ROOT, "web", "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _resolve_run_path(run_dir: str) -> str:
+    """Resolve a run directory name to an absolute path, validating it exists."""
+    if os.path.isabs(run_dir):
+        full_path = run_dir
+    else:
+        full_path = os.path.join(PROJECT_ROOT, run_dir)
+    resolved = str(Path(full_path).resolve())
+    if not resolved.startswith(str(Path(PROJECT_ROOT).resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not os.path.isdir(resolved):
+        raise HTTPException(status_code=404, detail=f"Directory not found: {run_dir}")
+    return resolved
 
 # ---------------------------------------------------------------------------
 # Run state tracking
@@ -76,10 +94,9 @@ def _save_progress(progress_file: str, progress: Dict[str, Dict], config_hash: s
 
 def _find_run_dirs() -> List[Dict[str, str]]:
     """Scan for run directories at the project root."""
-    root = os.path.dirname(os.path.abspath(__file__))
     dirs = []
-    for entry in sorted(os.listdir(root)):
-        path = os.path.join(root, entry)
+    for entry in sorted(os.listdir(PROJECT_ROOT)):
+        path = os.path.join(PROJECT_ROOT, entry)
         if os.path.isdir(path) and os.path.isdir(os.path.join(path, "papers")):
             # Count papers
             papers = (
@@ -207,7 +224,8 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
             with open(env_path, "w") as f:
                 for k, v in env_vars.items():
                     if not k.endswith("_API_KEY"):
-                        f.write(f"{k}={v}\n")
+                        clean_v = str(v).replace("\n", "").replace("\r", "")
+                        f.write(f"{k}={clean_v}\n")
 
         config = Config(config_path=dirs["input_dir"])
         config_hash = get_config_hash(config)
@@ -232,18 +250,16 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
 
         # Select pipeline
         if mode == "literature":
-            from run_review_with_dir_literature import main as _lit_main
-            # Import needed agents
             from agents.agent_librarian import create_baseline_reference
             from agents.agent_reader import process_paper_extractions as process_lit
             from agents.agent_fact_checker import run_fact_checks
             from agents.agent_critic import synthesize_grounded_review
             from agents.agent_extractor import process_paper_extractions
             from agents.agent_synthesizer import synthesize_review
+            from run_review_with_dir_literature import enhance_review_with_literature
             from utilities.output_generator import save_review_markdown, save_consolidated_csv
             from utilities.helpers import load_yaml_config
             from core.data_models import GroundedReview, LiteratureContext
-            import time as time_mod
 
             literature_config = load_yaml_config("config/literature_sources.yaml")
         else:
@@ -313,6 +329,7 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
                                            result_summary=f"{len(extractions)} criteria"))
 
                 if not extractions:
+                    emitter.emit(Error(stage_name="Extraction", message=f"No extractions for {paper.filename} — skipping", recoverable=True))
                     continue
 
                 # Stage 3: Fact-Checker
@@ -327,10 +344,17 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
                     emitter.emit(StageCompleted(stage_name="Fact-Check", duration_s=time.time()-t0,
                                                result_summary=f"{len(fact_checks)} checks"))
 
-                # Stage 4: Critic
+                # Stage 4: Two-phase synthesis (standard review + literature enhancement)
                 emitter.emit(StageStarted(stage_name="Synthesis", paper_filename=paper.filename))
                 t0 = time.time()
-                review = synthesize_grounded_review(paper, extractions, config, baseline=baseline, fact_checks=fact_checks)
+                base_review = synthesize_review(paper, extractions, config)
+                if base_review:
+                    review = enhance_review_with_literature(
+                        base_review=base_review, paper=paper, baseline=baseline,
+                        fact_checks=fact_checks, extractions=extractions, config=config,
+                    )
+                else:
+                    review = synthesize_grounded_review(paper, extractions, config, baseline=baseline, fact_checks=fact_checks)
                 emitter.emit(StageCompleted(stage_name="Synthesis", duration_s=time.time()-t0,
                                            result_summary=f"Score: {review.overall_score:.1f}" if review else "Failed"))
             else:
@@ -342,6 +366,7 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
                                            result_summary=f"{len(extractions)} criteria"))
 
                 if not extractions:
+                    emitter.emit(Error(stage_name="Extraction", message=f"No extractions for {paper.filename} — skipping", recoverable=True))
                     continue
 
                 emitter.emit(StageStarted(stage_name="Synthesis", paper_filename=paper.filename))
@@ -438,13 +463,12 @@ async def start_run(request: Request):
     if not run_dir:
         raise HTTPException(status_code=400, detail="run_dir is required")
 
-    # Resolve to absolute path
-    if not os.path.isabs(run_dir):
-        root = os.path.dirname(os.path.abspath(__file__))
-        run_dir = os.path.join(root, run_dir)
+    run_dir = _resolve_run_path(run_dir)
 
-    if not os.path.isdir(run_dir):
-        raise HTTPException(status_code=404, detail=f"Directory not found: {run_dir}")
+    # Prevent concurrent runs on the same directory
+    for rid, info in _active_runs.items():
+        if info["run_dir"] == run_dir:
+            raise HTTPException(status_code=409, detail=f"A run is already active on this directory (run_id: {rid})")
 
     run_id = f"{os.path.basename(run_dir)}_{int(time.time())}"
 
@@ -514,15 +538,13 @@ async def stop_run(run_id: str):
 
 @app.get("/api/config/{run_dir:path}")
 async def get_config(run_dir: str):
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     return {"config": _load_config_safe(full_path)}
 
 
 @app.get("/api/results/{run_dir:path}")
 async def get_results(run_dir: str):
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     return {"results": _parse_csv_results(full_path)}
 
 
@@ -530,8 +552,7 @@ async def get_results(run_dir: str):
 async def get_all_reviews(run_dir: str):
     """Return ALL review files for a run directory with parsed metadata and scores."""
     import re
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     reviews_dir = os.path.join(full_path, "outputs", "reviews")
     if not os.path.isdir(reviews_dir):
         return {"reviews": []}
@@ -619,29 +640,29 @@ async def get_all_reviews(run_dir: str):
 
 @app.get("/api/review/{run_dir:path}/{filename:path}")
 async def get_review(run_dir: str, filename: str):
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
-    review_path = os.path.join(full_path, "outputs", "reviews", filename)
-    if not os.path.exists(review_path):
+    full_path = _resolve_run_path(run_dir)
+    reviews_dir = Path(full_path) / "outputs" / "reviews"
+    review_path = (reviews_dir / filename).resolve()
+    if not str(review_path).startswith(str(reviews_dir.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not review_path.exists():
         raise HTTPException(status_code=404, detail="Review not found")
-    return FileResponse(review_path, media_type="text/markdown")
+    return FileResponse(str(review_path), media_type="text/markdown")
 
 
 @app.get("/api/criteria/{run_dir:path}")
 async def get_criteria(run_dir: str):
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     return {"criteria": _load_criteria(full_path)}
 
 
 @app.get("/api/criteria-raw/{run_dir:path}")
 async def get_criteria_raw(run_dir: str):
     """Return raw YAML text of criteria.yaml for editing."""
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     criteria_path = os.path.join(full_path, "input", "criteria.yaml")
     if not os.path.exists(criteria_path):
-        criteria_path = os.path.join(root, "config", "criteria.yaml")
+        criteria_path = os.path.join(PROJECT_ROOT, "config", "criteria.yaml")
     if not os.path.exists(criteria_path):
         raise HTTPException(status_code=404, detail="criteria.yaml not found")
     with open(criteria_path) as f:
@@ -659,13 +680,15 @@ async def update_criteria(run_dir: str, request: Request):
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     criteria_path = os.path.join(full_path, "input", "criteria.yaml")
     if not os.path.exists(criteria_path):
         os.makedirs(os.path.dirname(criteria_path), exist_ok=True)
-    with open(criteria_path, "w") as f:
-        f.write(content)
+    try:
+        with open(criteria_path, "w") as f:
+            f.write(content)
+    except (IOError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write criteria: {e}")
     return {"success": True}
 
 
@@ -677,11 +700,16 @@ async def update_config(run_dir: str, request: Request):
         "EXTRACTOR_MODEL", "SYNTHESIZER_MODEL",
         "MODEL_EXTRACTION", "MODEL_SYNTHESIS",
         "TEMPERATURE", "TEMPERATURE_EXTRACTION", "TEMPERATURE_SYNTHESIS",
-        "MAX_TOKENS_EXTRACTION", "MAX_TOKENS_SYNTHESIS",
+        "MAX_TOKENS_EXTRACTION", "MAX_TOKENS_SYNTHESIS", "MAX_TOKENS_JUDGE",
+        "TOKEN_LIMIT_DEFAULT",
         "EXTRACTION_BATCH_SIZE", "MAX_PARALLEL_EXTRACTIONS", "CONCURRENCY",
         "DOMAIN", "LANGUAGE",
         "MAX_RETRIES", "JUDGE_PROVIDER", "JUDGE_MODEL", "JUDGE_TEMPERATURE",
         "LITERATURE_GROUNDING_ENABLED",
+        "LIBRARIAN_TEMPERATURE", "LIBRARIAN_SUMMARY_TEMPERATURE",
+        "FACT_CHECKER_TEMPERATURE", "CRITIC_TEMPERATURE",
+        "CRITIC_MAX_JSON_RETRIES", "FACT_CHECKER_MAX_RETRIES",
+        "LLM_TIMEOUT", "API_TIMEOUT",
     }
     body = await request.json()
     key = body.get("key", "")
@@ -691,6 +719,10 @@ async def update_config(run_dir: str, request: Request):
     if isinstance(value, float) and (value != value or abs(value) == float("inf")):
         raise HTTPException(status_code=400, detail="Value must be a valid number")
 
+    # Prevent newline injection
+    if isinstance(value, str):
+        value = value.replace("\n", "").replace("\r", "")
+
     if not key:
         raise HTTPException(status_code=400, detail="key is required")
     if "KEY" in key.upper() or "SECRET" in key.upper():
@@ -698,8 +730,7 @@ async def update_config(run_dir: str, request: Request):
     if key not in ALLOWED_KEYS:
         raise HTTPException(status_code=400, detail=f"Key '{key}' is not editable. Allowed: {sorted(ALLOWED_KEYS)}")
 
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     env_path = os.path.join(full_path, "input", ".env")
     if not os.path.exists(env_path):
         raise HTTPException(status_code=404, detail=".env not found")
@@ -728,8 +759,7 @@ async def update_config(run_dir: str, request: Request):
 @app.get("/api/prompts")
 async def get_prompts():
     """Return all prompt files with their content."""
-    root = os.path.dirname(os.path.abspath(__file__))
-    prompts_dir = os.path.join(root, "config", "prompts")
+    prompts_dir = os.path.join(PROJECT_ROOT, "config", "prompts")
     if not os.path.isdir(prompts_dir):
         return {"prompts": []}
     prompts = []
@@ -753,18 +783,19 @@ async def update_prompt(filename: str, request: Request):
     body = await request.json()
     content = body.get("content", "")
 
-    root = os.path.dirname(os.path.abspath(__file__))
-    prompt_path = os.path.join(root, "config", "prompts", filename)
-    with open(prompt_path, "w") as f:
-        f.write(content)
+    prompt_path = os.path.join(PROJECT_ROOT, "config", "prompts", filename)
+    try:
+        with open(prompt_path, "w") as f:
+            f.write(content)
+    except (IOError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write prompt: {e}")
     return {"success": True}
 
 
 @app.get("/api/literature-sources")
 async def get_literature_sources():
     """Return literature_sources.yaml content."""
-    root = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(root, "config", "literature_sources.yaml")
+    path = os.path.join(PROJECT_ROOT, "config", "literature_sources.yaml")
     if not os.path.exists(path):
         return {"content": ""}
     with open(path) as f:
@@ -782,17 +813,98 @@ async def update_literature_sources(request: Request):
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
-    root = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(root, "config", "literature_sources.yaml")
-    with open(path, "w") as f:
-        f.write(content)
+    path = os.path.join(PROJECT_ROOT, "config", "literature_sources.yaml")
+    try:
+        with open(path, "w") as f:
+            f.write(content)
+    except (IOError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write literature sources: {e}")
     return {"success": True}
+
+
+@app.get("/api/model-costs")
+async def get_model_costs():
+    """Return model_costs.yaml content and litellm's known pricing for active models."""
+    import yaml
+    path = os.path.join(PROJECT_ROOT, "config", "model_costs.yaml")
+    yaml_content = ""
+    custom_models = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            yaml_content = f.read()
+        try:
+            data = yaml.safe_load(yaml_content) or {}
+            custom_models = data.get("models", {})
+        except yaml.YAMLError:
+            pass
+
+    # Also return litellm's built-in pricing for commonly used models
+    import litellm
+    builtin = {}
+    for model_key in list(litellm.model_cost.keys()):
+        info = litellm.model_cost[model_key]
+        inp = info.get("input_cost_per_token", 0)
+        out = info.get("output_cost_per_token", 0)
+        if inp or out:
+            builtin[model_key] = {
+                "input_cost_per_million": round(inp * 1_000_000, 4),
+                "output_cost_per_million": round(out * 1_000_000, 4),
+                "source": "litellm" if model_key not in custom_models else "custom",
+            }
+
+    return {"content": yaml_content, "custom_models": custom_models, "builtin_count": len(builtin)}
+
+
+@app.put("/api/model-costs")
+async def update_model_costs(request: Request):
+    """Update model_costs.yaml and re-register models with litellm."""
+    import yaml
+    body = await request.json()
+    content = body.get("content", "")
+    try:
+        data = yaml.safe_load(content)
+        if data and "models" in data:
+            for name, info in data["models"].items():
+                if not isinstance(info, dict):
+                    raise ValueError(f"Model '{name}' must be a mapping")
+        elif data is not None:
+            raise ValueError("YAML must contain a 'models' key")
+    except (yaml.YAMLError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+
+    path = os.path.join(PROJECT_ROOT, "config", "model_costs.yaml")
+    try:
+        with open(path, "w") as f:
+            f.write(content)
+    except (IOError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write model costs: {e}")
+
+    # Re-register models with litellm
+    from core.llm_wrapper import _load_and_register_custom_models
+    _load_and_register_custom_models()
+
+    return {"success": True}
+
+
+@app.get("/api/model-costs/lookup/{model_name:path}")
+async def lookup_model_cost(model_name: str):
+    """Look up litellm's pricing for a specific model."""
+    import litellm
+    info = litellm.model_cost.get(model_name, {})
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found in litellm registry")
+    return {
+        "model": model_name,
+        "input_cost_per_million": round(info.get("input_cost_per_token", 0) * 1_000_000, 4),
+        "output_cost_per_million": round(info.get("output_cost_per_token", 0) * 1_000_000, 4),
+        "max_input_tokens": info.get("max_input_tokens"),
+        "max_output_tokens": info.get("max_output_tokens"),
+    }
 
 
 @app.get("/api/reviews/{run_dir:path}")
 async def list_reviews(run_dir: str):
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     return {"reviews": _get_reviews(full_path)}
 
 
@@ -863,11 +975,7 @@ def _run_judge_pipeline(run_dir: str, run_id: str):
 @app.post("/api/judge/{run_dir:path}")
 async def start_judge(run_dir: str):
     """Start the compare + judge pipeline for a run directory."""
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
-
-    if not os.path.isdir(full_path):
-        raise HTTPException(status_code=404, detail="Run directory not found")
+    full_path = _resolve_run_path(run_dir)
 
     reports_dir = os.path.join(full_path, "outputs", "reports")
     csv_files = glob.glob(os.path.join(reports_dir, "report_consolidated_*.csv"))
@@ -895,8 +1003,7 @@ async def start_judge(run_dir: str):
 async def get_judge_results(run_dir: str):
     """Return the latest judge verdicts CSV as JSON."""
     import pandas as pd
-    root = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(root, run_dir) if not os.path.isabs(run_dir) else run_dir
+    full_path = _resolve_run_path(run_dir)
     reports_dir = os.path.join(full_path, "outputs", "reports")
     if not os.path.isdir(reports_dir):
         return {"verdicts": []}

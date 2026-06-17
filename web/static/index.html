@@ -27,12 +27,14 @@
 
     <div class="main-content">
         <!-- Left: Config Panel -->
-        <aside class="config-panel">
+        <aside class="config-panel" id="config-panel">
+            <button class="panel-toggle" id="panel-toggle" title="Collapse panel">&lsaquo;</button>
             <div class="sidebar-tabs">
                 <button class="sidebar-tab active" data-tab="config">Config</button>
                 <button class="sidebar-tab" data-tab="criteria">Criteria</button>
                 <button class="sidebar-tab" data-tab="prompts">Prompts</button>
                 <button class="sidebar-tab" data-tab="sources">Sources</button>
+                <button class="sidebar-tab" data-tab="costs">Costs</button>
             </div>
 
             <!-- Config Tab -->
@@ -86,6 +88,23 @@
                     <button id="sources-reload-btn" class="btn btn-sm btn-secondary">Reload</button>
                 </div>
                 <div id="sources-validation" class="validation-msg"></div>
+            </div>
+
+            <!-- Costs Tab -->
+            <div id="tab-costs" class="tab-panel">
+                <div class="costs-hint">
+                    Custom pricing for models litellm doesn't know. Pricing in $/million tokens.
+                </div>
+                <div id="costs-editor-wrap" class="editor-wrap">
+                    <textarea id="costs-editor" class="code-editor" placeholder="Loading model costs..."></textarea>
+                </div>
+                <div class="editor-actions">
+                    <button id="costs-save-btn" class="btn btn-sm btn-primary">Save</button>
+                    <button id="costs-reload-btn" class="btn btn-sm btn-secondary">Reload</button>
+                    <button id="costs-lookup-btn" class="btn btn-sm btn-secondary">Lookup Model</button>
+                </div>
+                <div id="costs-validation" class="validation-msg"></div>
+                <div id="costs-lookup-result" class="lookup-result"></div>
             </div>
         </aside>
 
@@ -196,6 +215,10 @@
         <h2>Event Log</h2>
         <div id="log-content" class="log-content"></div>
     </section>
+
+    <footer class="app-footer">
+        Agentic Academic Review System &middot; UNU Campus Computing Centre &middot; Developed by Ng Chong
+    </footer>
 
     <script src="/static/app.js"></script>
 </body>

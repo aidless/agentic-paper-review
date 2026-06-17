@@ -2,7 +2,6 @@
 
 A multi-agent LLM system for structured academic paper review. Ingests PDFs (and other formats), evaluates each paper against custom criteria, and produces scored reviews with optional cross-model adjudication and literature grounding.
 
-By [Ng Chong](https://c3.unu.edu/ng-chong-publications) | UNU Campus Computing Centre
 
 **Full documentation:** https://c3.unu.edu/projects/ai/paperreview/userguide.html
 **Blog article:** https://c3.unu.edu/blog/from-months-to-days-ai-assisted-peer-review-with-human-oversight
@@ -134,6 +133,8 @@ python web_app.py --port 8050
 
 Open **http://localhost:8050**.
 
+> **Note:** The web dashboard is designed for local use only. It has no authentication — do not expose it on a public network or the open internet. If you need remote access, use an SSH tunnel or VPN.
+
 ### Features
 
 - **Start/Stop Runs** — Select a run directory, pick Standard or Literature-Grounded mode, and start reviews with one click
@@ -142,6 +143,7 @@ Open **http://localhost:8050**.
 - **Criteria Editor** — Edit `criteria.yaml` directly in the browser with YAML validation
 - **Prompt Editor** — Edit all 4 prompt templates (extractor/synthesizer system/user) with template variable hints
 - **Literature Sources Editor** — Edit `literature_sources.yaml` with YAML validation
+- **Model Costs Editor** — Maintain custom token pricing for models litellm doesn't know (e.g., new DeepSeek releases) with model cost lookup
 - **Results Table** — Sortable table with scores, recommendations, cost, and one-click review viewing
 - **Review Viewer** — Modal viewer with rendered Markdown for individual paper reviews
 
@@ -153,6 +155,7 @@ Open **http://localhost:8050**.
 | Criteria | Full YAML editor for review criteria with save/reload and validation |
 | Prompts | Select and edit prompt templates with template variable reference |
 | Sources | YAML editor for literature source configuration |
+| Costs | Custom model token pricing ($/million tokens) for accurate cost tracking |
 
 ## Customization
 

@@ -145,6 +145,48 @@ body {
     padding: 12px;
     overflow-y: auto;
     flex-shrink: 0;
+    position: relative;
+    transition: width 0.2s, min-width 0.2s, padding 0.2s;
+}
+
+.config-panel.collapsed {
+    width: 36px;
+    min-width: 36px;
+    padding: 12px 4px;
+    overflow: hidden;
+}
+
+.config-panel.collapsed .sidebar-tabs,
+.config-panel.collapsed .tab-panel {
+    display: none;
+}
+
+.panel-toggle {
+    position: absolute;
+    top: 8px;
+    right: 4px;
+    width: 24px;
+    height: 24px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.panel-toggle:hover {
+    color: var(--text-primary);
+    background: var(--accent);
+}
+
+.config-panel.collapsed .panel-toggle {
+    right: 6px;
 }
 
 .config-panel h2 {
@@ -262,6 +304,24 @@ body {
 
 .validation-msg.success { color: var(--success); }
 .validation-msg.error { color: var(--danger); }
+
+/* Costs tab */
+.costs-hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 4px 0 8px;
+    line-height: 1.4;
+}
+
+.lookup-result {
+    font-size: 12px;
+    padding: 4px 0;
+    min-height: 16px;
+    word-break: break-all;
+}
+
+.lookup-result.success { color: var(--info); }
+.lookup-result.error { color: var(--danger); }
 
 /* Inline config editing */
 .config-item.editable-config {
@@ -549,7 +609,8 @@ body {
     background: var(--bg-secondary);
     border-top: 1px solid var(--border-color);
     padding: 12px 20px;
-    max-height: 180px;
+    padding-bottom: 32px;
+    max-height: 200px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -675,6 +736,21 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Footer */
+.app-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 6px 16px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    text-align: center;
+    z-index: 100;
 }
 
 /* Responsive */

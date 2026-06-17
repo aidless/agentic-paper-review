@@ -23,21 +23,36 @@ requests.packages.urllib3.disable_warnings() # Disable warnings for verify=False
 # This is CRITICAL for all other calls
 litellm.drop_params = True
 
-# Register models that litellm doesn't know yet (new releases ahead of litellm updates)
-_EXTRA_MODELS = {
-    "deepseek/deepseek-v4-flash": {
-        "max_tokens": 16384, "max_input_tokens": 1000000, "max_output_tokens": 384000,
-        "input_cost_per_token": 0, "output_cost_per_token": 0, "litellm_provider": "deepseek",
-    },
-    "deepseek/deepseek-v4-pro": {
-        "max_tokens": 16384, "max_input_tokens": 1000000, "max_output_tokens": 384000,
-        "input_cost_per_token": 0, "output_cost_per_token": 0, "litellm_provider": "deepseek",
-    },
-}
-try:
-    litellm.register_model(_EXTRA_MODELS)
-except Exception:
-    pass
+# Register custom models from config/model_costs.yaml (pricing + token limits)
+def _load_and_register_custom_models():
+    """Load model_costs.yaml and register entries with litellm."""
+    import yaml
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "model_costs.yaml")
+    if not os.path.exists(config_path):
+        return
+    try:
+        with open(config_path) as f:
+            data = yaml.safe_load(f) or {}
+        models = data.get("models", {})
+        extra = {}
+        for model_name, info in models.items():
+            input_per_m = float(info.get("input_cost_per_million", 0))
+            output_per_m = float(info.get("output_cost_per_million", 0))
+            extra[model_name] = {
+                "max_tokens": int(info.get("max_output_tokens", 16384)),
+                "max_input_tokens": int(info.get("max_input_tokens", 128000)),
+                "max_output_tokens": int(info.get("max_output_tokens", 16384)),
+                "input_cost_per_token": input_per_m / 1_000_000,
+                "output_cost_per_token": output_per_m / 1_000_000,
+                "litellm_provider": info.get("litellm_provider", "openai"),
+            }
+        if extra:
+            litellm.register_model(extra)
+            print(f"[ModelCosts] Registered {len(extra)} custom model(s) from model_costs.yaml")
+    except Exception as e:
+        print(f"[ModelCosts] Warning: could not load model_costs.yaml: {e}")
+
+_load_and_register_custom_models()
 
 def resolve_max_tokens(provider: str, model: str, role: Optional[str] = None) -> int:
     """
