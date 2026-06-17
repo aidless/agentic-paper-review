@@ -27,8 +27,7 @@ temp.*
 x.md
 output.md
 
-# Documentation to exclude
-article_agentic_review.md
+# Documentation
 *.html
 
 # IDE
@@ -45,15 +44,10 @@ compare_reports.py
 setup_batch_runs.py
 fetch_arxiv_papers.py
 
-0_Readme.md
-0_Specs_final.md
-0_Specs.md
-
 # Test caches and dirs
 test_literature_enhanced/
 test_literature_run/
 tests/
-
 
 # Archives
 archive/
