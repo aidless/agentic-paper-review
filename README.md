@@ -145,6 +145,7 @@ Open **http://localhost:8050**.
 - **Prompt Editor** — Edit all 4 prompt templates (extractor/synthesizer system/user) with template variable hints
 - **Literature Sources Editor** — Edit `literature_sources.yaml` with YAML validation
 - **Model Costs Editor** — Maintain custom token pricing for models litellm doesn't know (e.g., new DeepSeek releases) with model cost lookup
+- **Batch Processing** — "Batch Run" button to sequentially process all run directories with a progress overview
 - **Results Table** — Sortable table with scores, recommendations, cost, and one-click review viewing
 - **Review Viewer** — Modal viewer with rendered Markdown for individual paper reviews
 
@@ -157,6 +158,24 @@ Open **http://localhost:8050**.
 | Prompts | Select and edit prompt templates with template variable reference |
 | Sources | YAML editor for literature source configuration |
 | Costs | Custom model token pricing ($/million tokens) for accurate cost tracking |
+
+### CLI vs Web Dashboard
+
+The web dashboard covers common workflows. Some advanced features require the CLI:
+
+| Capability | CLI | Web |
+|------------|-----|-----|
+| Single-directory review | Yes | Yes |
+| Literature-grounded review | Yes | Yes |
+| Sequential batch processing | Yes | Yes |
+| Parallel batch (`--parallel --max-workers`) | Yes | No |
+| Batch setup & paper distribution | Yes | No — use `setup_batch_runs.py` |
+| No-cache mode (force re-processing) | Yes | No — delete `progress.json` |
+| Provider override flags (`--provider-*`) | Yes | Partial — edit `.env` in Config tab |
+| Automated conflict comparison | Yes | No — run `compare_reports.py` from CLI |
+| Retry & concurrency control | Yes | No |
+
+Use the dashboard for interactive reviews, configuration, and result browsing. Use the CLI for large-scale batch setup, parallel execution, and parameter sweeps.
 
 ## Customization
 

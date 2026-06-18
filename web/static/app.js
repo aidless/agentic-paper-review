@@ -14,6 +14,9 @@ let promptFiles = [];        // [{filename, content}, ...]
 let currentPromptFilename = "";
 let configDirty = {};        // {key: value} pending saves
 let originalConfig = {};     // snapshot before edits
+let batchActive = false;
+let batchDirs = [];
+let batchRunId = null;       // SSE run_id for current batch directory
 
 // DOM refs
 const runSelector = document.getElementById("run-selector");
@@ -57,6 +60,13 @@ const costsValidation = document.getElementById("costs-validation");
 const costsLookupResult = document.getElementById("costs-lookup-result");
 const judgeBtn = document.getElementById("judge-btn");
 const viewVerdictsBtn = document.getElementById("view-verdicts-btn");
+const batchBtn = document.getElementById("batch-btn");
+const batchStopBtn = document.getElementById("batch-stop-btn");
+const batchPanel = document.getElementById("batch-panel");
+const batchProgressBar = document.getElementById("batch-progress-bar");
+const batchText = document.getElementById("batch-text");
+const batchCurrent = document.getElementById("batch-current");
+const batchDirsList = document.getElementById("batch-dirs-list");
 const judgeModal = document.getElementById("judge-modal");
 const judgeModalBody = document.getElementById("judge-modal-body");
 const judgeModalClose = document.getElementById("judge-modal-close");
@@ -103,6 +113,10 @@ async function init() {
     judgeBtn.addEventListener("click", startJudge);
     judgeModalClose.addEventListener("click", () => judgeModal.style.display = "none");
     if (viewVerdictsBtn) viewVerdictsBtn.addEventListener("click", showJudgeVerdicts);
+
+    // Batch
+    batchBtn.addEventListener("click", startBatch);
+    batchStopBtn.addEventListener("click", stopBatch);
 
     // Load global resources
     await loadPrompts();
@@ -325,7 +339,17 @@ function handleEvent(evt) {
             progressBar.style.width = "100%";
             progressText.textContent = "Complete";
             progressEta.textContent = "";
-            finishRun();
+            if (!batchActive) finishRun();
+            break;
+
+        case "batch_dir_started":
+            addLog(`[Batch] Starting ${evt.dir_name} (${evt.dir_index + 1}/${evt.dir_total})`, "info");
+            updateBatchProgress(evt.dir_index, evt.dir_total, evt.dir_name);
+            break;
+
+        case "batch_completed":
+            addLog(`[Batch] Done: ${evt.completed} completed, ${evt.failed} failed, ${formatDuration(evt.total_time_s)}`, "success");
+            finishBatch();
             break;
     }
 }
@@ -906,6 +930,120 @@ async function showJudgeVerdicts() {
     } catch (e) {
         judgeModalBody.innerHTML = "Error: " + e.message;
     }
+}
+
+// ---- Batch Processing ----
+
+async function startBatch() {
+    batchBtn.disabled = true;
+    startBtn.disabled = true;
+    batchStopBtn.style.display = "inline-block";
+    batchActive = true;
+
+    batchPanel.style.display = "block";
+    batchDirsList.innerHTML = "";
+    batchProgressBar.style.width = "0%";
+    batchText.textContent = "Starting batch...";
+    batchCurrent.textContent = "";
+    logContent.innerHTML = "";
+
+    try {
+        const data = await api("/api/batch-start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: modeSelector.value }),
+        });
+        batchDirs = data.dirs || [];
+        renderBatchDirsList(batchDirs);
+        batchText.textContent = `0/${batchDirs.length} directories`;
+        addLog(`Batch started: ${batchDirs.length} directories in ${modeSelector.value} mode`, "info");
+
+        connectBatchSSE();
+        runStartTime = Date.now();
+        startElapsedTimer();
+    } catch (e) {
+        addLog("Batch failed: " + e.message, "error");
+        finishBatch();
+    }
+}
+
+function connectBatchSSE() {
+    if (eventSource) eventSource.close();
+    sseReconnectAttempts = 0;
+
+    eventSource = new EventSource("/api/events/batch");
+
+    eventSource.addEventListener("progress", (e) => {
+        sseReconnectAttempts = 0;
+        try {
+            const evt = JSON.parse(e.data);
+            handleEvent(evt);
+        } catch {}
+    });
+
+    eventSource.addEventListener("ping", () => {
+        sseReconnectAttempts = 0;
+    });
+
+    eventSource.onerror = () => {
+        eventSource.close();
+        eventSource = null;
+        sseReconnectAttempts++;
+        if (sseReconnectAttempts <= SSE_MAX_RECONNECT && batchActive) {
+            addLog(`Connection lost — reconnecting (${sseReconnectAttempts}/${SSE_MAX_RECONNECT})...`, "warning");
+            setTimeout(() => { if (batchActive) connectBatchSSE(); }, 2000 * sseReconnectAttempts);
+        } else if (batchActive) {
+            addLog("Connection lost. Refresh the page to reconnect.", "error");
+        }
+    };
+}
+
+async function stopBatch() {
+    try {
+        await api("/api/batch-stop", { method: "POST" });
+        addLog("Batch cancellation requested...", "warning");
+    } catch (e) {
+        addLog("Stop batch failed: " + e.message, "error");
+    }
+}
+
+function updateBatchProgress(index, total, dirName) {
+    const pct = total > 0 ? (100 * index / total) : 0;
+    batchProgressBar.style.width = pct + "%";
+    batchText.textContent = `${index}/${total} directories`;
+    batchCurrent.textContent = `Current: ${dirName}`;
+
+    const items = batchDirsList.querySelectorAll(".batch-dir-item");
+    items.forEach((item, i) => {
+        item.classList.remove("active", "completed");
+        if (i < index) item.classList.add("completed");
+        else if (i === index) item.classList.add("active");
+    });
+}
+
+function renderBatchDirsList(dirs) {
+    batchDirsList.innerHTML = dirs.map(d =>
+        `<span class="batch-dir-item">${escapeHtml(d)}</span>`
+    ).join("");
+}
+
+function finishBatch() {
+    batchActive = false;
+    batchBtn.disabled = false;
+    startBtn.disabled = !currentRunDir;
+    batchStopBtn.style.display = "none";
+    batchProgressBar.style.width = "100%";
+    batchText.textContent = "Batch complete";
+    batchCurrent.textContent = "";
+    if (elapsedInterval) clearInterval(elapsedInterval);
+    if (eventSource) { eventSource.close(); eventSource = null; }
+
+    const items = batchDirsList.querySelectorAll(".batch-dir-item");
+    items.forEach(item => {
+        if (!item.classList.contains("completed")) item.classList.add("completed");
+    });
+
+    if (currentRunDir) loadResults();
 }
 
 // Init

@@ -63,6 +63,7 @@ def _resolve_run_path(run_dir: str) -> str:
 _active_runs: Dict[str, Dict[str, Any]] = {}
 _run_history: List[Dict[str, Any]] = []
 _cancel_flags: Dict[str, bool] = {}
+_batch_state: Dict[str, Any] = {}  # {"active": bool, "dirs": [...], "current_index": int, ...}
 
 
 def _load_progress(progress_file: str, current_config_hash: str, mode: str) -> Dict[str, Dict]:
@@ -534,6 +535,141 @@ async def stop_run(run_id: str):
         raise HTTPException(status_code=404, detail="Run not found")
     _cancel_flags[run_id] = True
     return {"status": "cancelling"}
+
+
+# ---------------------------------------------------------------------------
+# Batch processing — sequential run of all (or selected) run directories
+# ---------------------------------------------------------------------------
+
+def _run_batch(dirs: List[str], mode: str):
+    """Run pipeline sequentially for each directory."""
+    emitter = get_emitter()
+    _batch_state.update({
+        "active": True,
+        "dirs": [os.path.basename(d) for d in dirs],
+        "current_index": 0,
+        "completed": [],
+        "failed": [],
+        "cancelled": False,
+        "started_at": time.time(),
+    })
+
+    sse = get_sse_backend()
+    if not sse:
+        sse = SSEBackend()
+        emitter.add_backend(sse)
+
+    for idx, run_dir in enumerate(dirs):
+        if _batch_state.get("cancelled"):
+            break
+
+        dir_name = os.path.basename(run_dir)
+        _batch_state["current_index"] = idx
+
+        run_id = f"batch_{dir_name}_{int(time.time())}"
+
+        _active_runs[run_id] = {
+            "run_dir": run_dir,
+            "mode": mode,
+            "started_at": time.time(),
+            "status": "running",
+        }
+
+        if sse:
+            batch_evt = json.dumps({
+                "event_type": "batch_dir_started",
+                "dir_name": dir_name,
+                "dir_index": idx,
+                "dir_total": len(dirs),
+                "timestamp": time.time(),
+            })
+            with sse._lock:
+                for q in list(sse._listeners):
+                    try:
+                        q.put_nowait(batch_evt)
+                    except Exception:
+                        pass
+
+        try:
+            _run_pipeline(run_dir, run_id, mode, {})
+            _batch_state["completed"].append(dir_name)
+        except Exception as e:
+            _batch_state["failed"].append({"dir": dir_name, "error": str(e)})
+            emitter.emit(Error(stage_name="batch", message=f"Failed on {dir_name}: {e}", recoverable=True))
+
+    total_time = time.time() - _batch_state["started_at"]
+    sse = get_sse_backend()
+    if sse:
+        batch_evt = json.dumps({
+            "event_type": "batch_completed",
+            "completed": len(_batch_state["completed"]),
+            "failed": len(_batch_state["failed"]),
+            "total": len(dirs),
+            "total_time_s": total_time,
+            "timestamp": time.time(),
+        })
+        with sse._lock:
+            for q in list(sse._listeners):
+                try:
+                    q.put_nowait(batch_evt)
+                except Exception:
+                    pass
+    _batch_state["active"] = False
+
+
+@app.post("/api/batch-start")
+async def batch_start(request: Request):
+    if _batch_state.get("active"):
+        raise HTTPException(status_code=409, detail="A batch is already running")
+    if _active_runs:
+        raise HTTPException(status_code=409, detail="A single run is already active — stop it first")
+
+    body = await request.json()
+    mode = body.get("mode", "standard")
+    selected_dirs = body.get("dirs")  # optional list of dir names
+
+    all_dirs = _find_run_dirs()
+    if selected_dirs:
+        dirs = [d["path"] for d in all_dirs if d["name"] in selected_dirs]
+    else:
+        dirs = [d["path"] for d in all_dirs]
+
+    if not dirs:
+        raise HTTPException(status_code=400, detail="No run directories found")
+
+    emitter = get_emitter()
+    sse = get_sse_backend()
+    if not sse:
+        sse = SSEBackend()
+        emitter.add_backend(sse)
+
+    thread = threading.Thread(target=_run_batch, args=(dirs, mode), daemon=True)
+    thread.start()
+
+    return {"status": "started", "dirs": [os.path.basename(d) for d in dirs], "total": len(dirs)}
+
+
+@app.post("/api/batch-stop")
+async def batch_stop():
+    if not _batch_state.get("active"):
+        raise HTTPException(status_code=404, detail="No batch running")
+    _batch_state["cancelled"] = True
+    for rid in list(_cancel_flags.keys()):
+        _cancel_flags[rid] = True
+    return {"status": "cancelling"}
+
+
+@app.get("/api/batch-status")
+async def batch_status():
+    if not _batch_state:
+        return {"active": False}
+    return {
+        "active": _batch_state.get("active", False),
+        "dirs": _batch_state.get("dirs", []),
+        "current_index": _batch_state.get("current_index", 0),
+        "completed": _batch_state.get("completed", []),
+        "failed": _batch_state.get("failed", []),
+    }
 
 
 @app.get("/api/config/{run_dir:path}")

@@ -23,6 +23,8 @@
             </select>
             <button id="start-btn" class="btn btn-primary" disabled>Start Review</button>
             <button id="stop-btn" class="btn btn-danger" style="display:none">Stop</button>
+            <button id="batch-btn" class="btn btn-secondary" title="Run all directories sequentially">Batch Run</button>
+            <button id="batch-stop-btn" class="btn btn-danger" style="display:none">Stop Batch</button>
         </div>
     </header>
 
@@ -153,6 +155,19 @@
                         <span id="current-paper-display" class="tracker-value">-</span>
                     </div>
                 </div>
+            </section>
+
+            <!-- Batch Progress -->
+            <section id="batch-panel" class="batch-panel" style="display:none">
+                <h2>Batch Progress</h2>
+                <div class="progress-bar-container">
+                    <div id="batch-progress-bar" class="progress-bar" style="width: 0%"></div>
+                </div>
+                <div class="batch-status">
+                    <span id="batch-text">0/0 directories</span>
+                    <span id="batch-current"></span>
+                </div>
+                <div id="batch-dirs-list" class="batch-dirs-list"></div>
             </section>
 
             <!-- Reports Table -->
