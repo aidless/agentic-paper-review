@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from core.data_models import Paper, Extraction
 from core.config_loader import Config
-from core.llm_wrapper import call_llm
+from core.llm_wrapper import call_llm, build_cached_messages
 from utilities.helpers import get_scale_definition
 
 def build_extraction_prompt(
@@ -31,6 +31,20 @@ def build_extraction_prompt(
         domain=domain
     )
 
+def _build_criterion_prompt(criterion: Dict[str, Any], config: Config) -> Optional[str]:
+    """Build the criterion-only user prompt from the dedicated template."""
+    template = config.get_prompt("extractor_criterion")
+    if not template:
+        return None
+    return template.format(
+        criterion_name=criterion['name'],
+        criterion_description=criterion['description'],
+        sub_questions="\n".join(f"- {q}" for q in criterion.get('sub_questions', [])),
+        scale_definition=get_scale_definition(criterion.get('scale', {})),
+        domain=config.domain,
+    )
+
+
 def extract_criterion_evidence(
     paper: Paper,
     criterion: Dict[str, Any],
@@ -40,28 +54,46 @@ def extract_criterion_evidence(
     Agent 1: Extract evidence for a single criterion.
     """
     llm_config = config.get_llm_config()
-    prompt_template = config.get_prompt("extractor_user")
     system_prompt = config.get_prompt("extractor_system").format(domain=config.domain)
-
     max_content_tokens = config.get_system_config()['max_content_tokens']
 
-    prompt = build_extraction_prompt(
-        paper_content=paper.content_markdown,
-        criterion=criterion,
-        domain=config.domain,
-        prompt_template=prompt_template,
-        max_content_tokens=max_content_tokens
-    )
-    
-    response = call_llm(
-        prompt=prompt,
-        system_prompt=system_prompt,
-        provider=llm_config['extractor_provider'],
-        model=llm_config['extractor_model'],
-        temperature=llm_config['temperature'],
-        max_retries=llm_config['max_retries'],
-        role="extraction"
-    )
+    paper_content = paper.content_markdown
+    if len(paper_content) > max_content_tokens * 4:
+        print(f"[Warning] Truncating paper content for {criterion['id']}")
+        paper_content = paper_content[:max_content_tokens * 4]
+
+    criterion_prompt = _build_criterion_prompt(criterion, config)
+
+    if criterion_prompt is not None:
+        messages = build_cached_messages(system_prompt, paper_content, criterion_prompt)
+        response = call_llm(
+            prompt="",
+            system_prompt="",
+            provider=llm_config['extractor_provider'],
+            model=llm_config['extractor_model'],
+            temperature=llm_config['temperature'],
+            max_retries=llm_config['max_retries'],
+            role="extraction",
+            messages=messages,
+        )
+    else:
+        prompt_template = config.get_prompt("extractor_user")
+        prompt = build_extraction_prompt(
+            paper_content=paper.content_markdown,
+            criterion=criterion,
+            domain=config.domain,
+            prompt_template=prompt_template,
+            max_content_tokens=max_content_tokens,
+        )
+        response = call_llm(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            provider=llm_config['extractor_provider'],
+            model=llm_config['extractor_model'],
+            temperature=llm_config['temperature'],
+            max_retries=llm_config['max_retries'],
+            role="extraction",
+        )
     
     if not response['success']:
         print(f"[Agent 1 Error] LLM call failed for {paper.filename} on {criterion['id']}: {response['error']}")

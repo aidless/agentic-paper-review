@@ -710,12 +710,21 @@ When writing your review, consider how the paper's claims relate to this literat
     # Use the novelty-adjusted score if available, otherwise use base score
     final_score = novelty_adjusted_score or base_score
 
+    # Recompute recommendation from final_score against thresholds
+    thresholds = config.get_recommendation_thresholds()
+    final_recommendation = thresholds[-1]['label'] if thresholds else "Reject"
+    for item in thresholds:
+        if final_score >= item['threshold']:
+            final_recommendation = item['label']
+            break
+
     try:
         review = GroundedReview(
             paper_id=paper.id,
             paper_title=paper.metadata.title,
             paper_filename=paper.filename,
             overall_score=final_score,
+            recommendation=final_recommendation,
             weighted_breakdown=breakdown,
             synthesizer_model_used=synthesizer_model_name,
             extractor_model_used=extractor_model_name,
@@ -723,7 +732,7 @@ When writing your review, consider how the paper's claims relate to this literat
             literature_context=literature_context,
             research_trajectory_section=research_trajectory,
             novelty_adjusted_score=novelty_adjusted_score,
-            **review_data
+            **{k: v for k, v in review_data.items() if k not in ('overall_score', 'recommendation')},
         )
 
         return review

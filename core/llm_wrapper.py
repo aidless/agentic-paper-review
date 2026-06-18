@@ -1,6 +1,6 @@
 import litellm
 from litellm import completion, completion_cost
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import sys
 import os
 import requests  # <-- NEW IMPORT
@@ -84,11 +84,43 @@ def resolve_max_tokens(provider: str, model: str, role: Optional[str] = None) ->
     return default_fallback
 
 
+def build_cached_messages(
+    system_prompt: str,
+    paper_content: str,
+    criterion_prompt: str
+) -> List[Dict[str, Any]]:
+    """
+    Build a message array with the paper in the system message for prefix caching.
+
+    The paper content is placed in the system message so it forms a shared
+    prefix across all criterion calls for the same paper. The cache_control
+    annotation enables explicit caching on Anthropic; litellm.drop_params=True
+    ensures it is silently stripped for providers that don't support it.
+    OpenAI/DeepSeek/Gemini cache identical prefixes automatically.
+    """
+    system_with_paper = f"{system_prompt}\n\n# Paper Content\n{paper_content}"
+
+    return [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": system_with_paper,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        },
+        {"role": "user", "content": criterion_prompt},
+    ]
+
+
 def _call_custom_ollama_bypass(
     system_prompt: str,
     prompt: str,
     model: str,
-    response_format: Optional[str] = None
+    response_format: Optional[str] = None,
+    messages: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     This is a surgical bypass of litellm to call the custom_openai
@@ -113,12 +145,24 @@ def _call_custom_ollama_bypass(
     }
 
     # 3. Define the *correct* payload with the *correct* parameters
-    payload = {
-        "model": model,
-        "messages": [
+    if messages is not None:
+        # Flatten content-list format to plain strings for custom endpoints
+        flat_messages = []
+        for msg in messages:
+            content = msg["content"]
+            if isinstance(content, list):
+                content = "\n".join(
+                    block["text"] for block in content if isinstance(block, dict) and "text" in block
+                )
+            flat_messages.append({"role": msg["role"], "content": content})
+    else:
+        flat_messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
-        ],
+        ]
+    payload = {
+        "model": model,
+        "messages": flat_messages,
         "temperature": 1.0,
         "max_completion_tokens": resolve_max_tokens("custom_openai", model),
         "stream": False
@@ -175,7 +219,8 @@ def call_llm(
     max_retries: int,
     response_format: Optional[str] = None,
     config: Optional[Any] = None,
-    role: Optional[str] = None
+    role: Optional[str] = None,
+    messages: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Unified LLM API call with retry logic, cost calculation,
@@ -195,8 +240,9 @@ def call_llm(
         return _call_custom_ollama_bypass(
             system_prompt=system_prompt,
             prompt=prompt,
-            model=model.strip(), # Pass the original model name
-            response_format=response_format
+            model=model.strip(),
+            response_format=response_format,
+            messages=messages
         )
     
     # ---
@@ -246,12 +292,13 @@ def call_llm(
     #print(f"[LLM_Wrapper_V8_DEBUG] Final litellm keys: {list(params.keys())}")
 
     try:
+        final_messages = messages if messages is not None else [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
         response = completion(
             model=model_string,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
+            messages=final_messages,
             **params
         )
         

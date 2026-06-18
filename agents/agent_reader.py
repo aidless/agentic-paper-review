@@ -22,7 +22,7 @@ from core.data_models import (
     BaselineReference
 )
 from core.config_loader import Config
-from core.llm_wrapper import call_llm
+from core.llm_wrapper import call_llm, build_cached_messages
 from utilities.helpers import get_scale_definition
 
 
@@ -90,6 +90,24 @@ Include these fields in your JSON response:
     return context
 
 
+def _build_reader_criterion_prompt(criterion: Dict[str, Any], config: Config,
+                                    baseline: Optional[BaselineReference] = None) -> Optional[str]:
+    """Build the criterion-only user prompt, with optional literature context."""
+    template = config.get_prompt("extractor_criterion")
+    if not template:
+        return None
+    prompt = template.format(
+        criterion_name=criterion['name'],
+        criterion_description=criterion['description'],
+        sub_questions="\n".join(f"- {q}" for q in criterion.get('sub_questions', [])),
+        scale_definition=get_scale_definition(criterion.get('scale', {})),
+        domain=config.domain,
+    )
+    if baseline:
+        prompt += _build_literature_context(baseline)
+    return prompt
+
+
 def extract_criterion_evidence(
     paper: Paper,
     criterion: Dict[str, Any],
@@ -101,49 +119,51 @@ def extract_criterion_evidence(
 
     When baseline is provided, also assesses novelty against literature.
     Without baseline, behaves like standard extractor.
-
-    Args:
-        paper: The target paper
-        criterion: The evaluation criterion
-        config: System configuration
-        baseline: Optional BaselineReference for novelty comparison
-
-    Returns:
-        NoveltyRankedExtraction with standard assessment plus optional novelty ranking
     """
     llm_config = config.get_llm_config()
-    prompt_template = config.get_prompt("extractor_user")
     system_prompt = config.get_prompt("extractor_system").format(domain=config.domain)
 
-    # Build standard prompt
     max_content_tokens = config.get_system_config()['max_content_tokens']
     paper_content = paper.content_markdown
     if len(paper_content) > max_content_tokens * 4:
         print(f"[Reader Warning] Truncating paper content for {criterion['id']}")
         paper_content = paper_content[:max_content_tokens * 4]
 
-    prompt = prompt_template.format(
-        paper_markdown=paper_content,
-        criterion_name=criterion['name'],
-        criterion_description=criterion['description'],
-        sub_questions="\n".join(f"- {q}" for q in criterion.get('sub_questions', [])),
-        scale_definition=get_scale_definition(criterion.get('scale', {})),
-        domain=config.domain
-    )
+    criterion_prompt = _build_reader_criterion_prompt(criterion, config, baseline)
 
-    # Inject literature context if baseline is available
-    if baseline:
-        prompt += _build_literature_context(baseline)
-
-    response = call_llm(
-        prompt=prompt,
-        system_prompt=system_prompt,
-        provider=llm_config['extractor_provider'],
-        model=llm_config['extractor_model'],
-        temperature=llm_config['temperature'],
-        max_retries=llm_config['max_retries'],
-        role="extraction"
-    )
+    if criterion_prompt is not None:
+        messages = build_cached_messages(system_prompt, paper_content, criterion_prompt)
+        response = call_llm(
+            prompt="",
+            system_prompt="",
+            provider=llm_config['extractor_provider'],
+            model=llm_config['extractor_model'],
+            temperature=llm_config['temperature'],
+            max_retries=llm_config['max_retries'],
+            role="extraction",
+            messages=messages,
+        )
+    else:
+        prompt_template = config.get_prompt("extractor_user")
+        prompt = prompt_template.format(
+            paper_markdown=paper_content,
+            criterion_name=criterion['name'],
+            criterion_description=criterion['description'],
+            sub_questions="\n".join(f"- {q}" for q in criterion.get('sub_questions', [])),
+            scale_definition=get_scale_definition(criterion.get('scale', {})),
+            domain=config.domain,
+        )
+        if baseline:
+            prompt += _build_literature_context(baseline)
+        response = call_llm(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            provider=llm_config['extractor_provider'],
+            model=llm_config['extractor_model'],
+            temperature=llm_config['temperature'],
+            max_retries=llm_config['max_retries'],
+            role="extraction",
+        )
 
     if not response['success']:
         print(f"[Reader Error] LLM call failed for {paper.filename} on {criterion['id']}: {response['error']}")

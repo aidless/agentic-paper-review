@@ -90,8 +90,11 @@ class ArxivSearcher:
             cat_query = " OR ".join([f"cat:{cat}" for cat in categories])
             query_parts.append(f"({cat_query})")
 
-        # Combine all parts
-        query = " AND ".join(query_parts) if query_parts else "all:*"
+        # Combine all parts — refuse to send a bare wildcard query
+        if not query_parts:
+            print("[Arxiv] No keywords or categories provided, skipping search")
+            return []
+        query = " AND ".join(query_parts)
 
         # Add date range filter
         if start_date or end_date:

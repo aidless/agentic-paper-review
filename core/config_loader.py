@@ -2,7 +2,7 @@
 import yaml
 import os
 from dotenv import load_dotenv
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 MODEL_DEFAULTS = {
     "extractor_provider": "openai",
@@ -60,6 +60,7 @@ class Config:
         self.prompts = {
             "extractor_system": self._load_prompt("extractor_system.txt"),
             "extractor_user": self._load_prompt("extractor_user.txt"),
+            "extractor_criterion": self._load_prompt_optional("extractor_criterion.txt"),
             "synthesizer_system": self._load_prompt("synthesizer_system.txt"),
             "synthesizer_user": self._load_prompt("synthesizer_user.txt"),
         }
@@ -71,6 +72,18 @@ class Config:
     def _load_prompt(self, file_name: str) -> str:
         with open(os.path.join(self.config_path, "prompts", file_name), 'r') as f:
             return f.read()
+
+    def _load_prompt_optional(self, file_name: str) -> Optional[str]:
+        """Load a prompt template, falling back to global config/prompts/ if not in run dir."""
+        run_path = os.path.join(self.config_path, "prompts", file_name)
+        if os.path.exists(run_path):
+            with open(run_path, 'r') as f:
+                return f.read()
+        global_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "prompts", file_name)
+        if os.path.exists(global_path):
+            with open(global_path, 'r') as f:
+                return f.read()
+        return None
 
     def get_env(self, key: str, default: Any = None) -> Any:
         return self.env.get(key, default)

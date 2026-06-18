@@ -135,18 +135,15 @@ def synthesize_review(
 
         review = Review(
             paper_id=paper.id,
-            paper_title=paper.metadata.title, 
-            
-            # --- MODIFIED: Pass the filename ---
+            paper_title=paper.metadata.title,
             paper_filename=paper.filename,
-            # --- (End of modification) ---
-
             overall_score=score,
+            recommendation=recommendation,
             weighted_breakdown=breakdown,
             synthesizer_model_used=synthesizer_model_name,
             extractor_model_used=extractor_model_name,
             total_cost=total_cost,
-            **review_data
+            **{k: v for k, v in review_data.items() if k not in ('overall_score', 'recommendation')},
         )
         return review
         

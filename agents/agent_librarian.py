@@ -6,6 +6,7 @@ in the target paper's sub-topic and extracting their key findings.
 """
 
 import json
+import os
 from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
 
@@ -34,13 +35,26 @@ def _extract_search_keywords(
     Returns:
         List of search keywords for finding related papers
     """
+    title = paper.metadata.title or ""
+    abstract = paper.metadata.abstract or ""
+    has_good_metadata = (
+        len(title) > 10
+        and "placeholder" not in abstract.lower()
+        and abstract != ""
+    )
+
+    if has_good_metadata:
+        paper_context = f"PAPER TITLE: {title}\n\nABSTRACT: {abstract}"
+    else:
+        snippet = (paper.content_markdown or "")[:3000]
+        print("[Librarian] Metadata missing/incomplete — using paper content for keyword extraction")
+        paper_context = f"PAPER CONTENT (first 3000 chars):\n{snippet}"
+
     prompt = f"""
-Analyze this paper's title and abstract to extract 5-8 specific search keywords
+Analyze this paper to extract 5-8 specific search keywords
 that would help find the most relevant related work in this field.
 
-PAPER TITLE: {paper.metadata.title}
-
-ABSTRACT: {paper.metadata.abstract}
+{paper_context}
 
 TASK:
 1. Identify the main research sub-topic (e.g., "causal inference in development economics")
@@ -375,7 +389,7 @@ def _search_multiple_sources(
         if semantic_config.get("enabled", True):
             print("[Librarian] Searching Semantic Scholar...")
             search_config = SearchConfig(
-                api_key=semantic_config.get('api_key'),
+                api_key=semantic_config.get('api_key') or os.environ.get('SEMANTIC_SCHOLAR_API_KEY'),
                 base_url=semantic_config.get('base_url', "https://api.semanticscholar.org/graph/v1"),
                 timeout=semantic_config.get('timeout', 30),
                 max_retries=semantic_config.get('max_retries', 3)

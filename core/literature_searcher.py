@@ -312,8 +312,17 @@ class LiteratureSearcher:
             return response.json()
 
         except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+
+            # Auth failure — drop the key and retry on free tier
+            if status in (401, 403) and "x-api-key" in self._session.headers:
+                print(f"[Semantic Scholar] API key rejected ({status}). Retrying without key (free tier)...")
+                del self._session.headers["x-api-key"]
+                time.sleep(1.0)
+                return self._make_request(url, params, retry_count)
+
             # Rate limiting - wait and retry
-            if e.response.status_code == 429:
+            if status == 429:
                 self._last_rate_limit_time = time.time()
                 self._rate_limit_hit_count += 1
 

@@ -81,9 +81,13 @@ Open **http://localhost:8050** to configure models, edit criteria/prompts, run r
 # 1. Set up a run directory
 python setup_run.py --run-dir my_review_run
 
-# 2. Drop papers into my_review_run/papers/
+# 2. Review criteria and domain BEFORE running
+#    Edit my_review_run/input/criteria.yaml — verify that `domain` matches
+#    your papers (e.g., computer_science, development_economics).
 
-# 3. Run the review
+# 3. Drop papers into my_review_run/papers/
+
+# 4. Run the review
 python run_with_custom_params.py \
   --run-dir my_review_run \
   --provider-extraction deepseek \
