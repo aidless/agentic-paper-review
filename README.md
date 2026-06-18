@@ -67,7 +67,7 @@ JUDGE_PROVIDER=gemini
 JUDGE_MODEL=gemini-3.1-flash-lite
 ```
 
-### Option A: Web Dashboard (Recommended)
+### Option A: Web Dashboard
 
 ```bash
 python web_app.py --port 8050
@@ -292,11 +292,11 @@ Configured in `config/literature_sources.yaml`:
 
 ## Cost Estimation
 
-```
-(Papers × Criteria × Extractor cost) + (Papers × Synthesizer cost) + (Conflicts × Judge cost)
-```
+Each paper is evaluated per criterion (8 criteria = 8 extraction calls) plus one synthesis call, plus one call per conflict for the Judge.
 
-A 500-paper batch with 8 criteria = ~4,000 extractor calls + 500 synthesizer calls. Always test with 5-10 papers first.
+**Prompt caching** significantly reduces extraction costs: the paper content is placed in the system message prefix and cached across all criterion calls for the same paper. The first criterion pays full price; the remaining 7 hit the cache at up to 90% discount (Anthropic) or are auto-cached (OpenAI, DeepSeek). Criteria are extracted in parallel for each paper.
+
+Always test with 5-10 papers first to verify your criteria and estimate costs before committing to a full batch.
 
 ## License
 
