@@ -42,6 +42,8 @@ class Extraction(BaseModel):
     model_used: str  # This stores the extractor model
     extraction_timestamp: datetime = Field(default_factory=datetime.utcnow)
     cost: float = 0.0
+    detailed_analysis: Optional[str] = ""  # Optional deep technical analysis
+    critical_flaw: Optional[str] = ""  # Potentially fatal flaw if any
 
 # --- Agent 2 (Synthesizer) Models ---
 
@@ -56,6 +58,8 @@ class DetailedAssessment(BaseModel):
     minor_issues: List[str]
 
 class Review(BaseModel):
+    model_config = {"extra": "ignore"}
+    
     paper_id: str
     paper_title: str
 
@@ -72,6 +76,8 @@ class Review(BaseModel):
     criterion_narrative: Dict[str, str]
     revision_suggestions: List[str]
     decision_confidence: float
+    verdict: str = ""  # One-line final verdict
+    technical_discussion: str = ""  # In-depth technical discussion / interrogation
     flags: List[str] = []
     synthesis_timestamp: datetime = Field(default_factory=datetime.utcnow)
     extractor_model_used: str

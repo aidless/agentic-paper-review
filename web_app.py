@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
@@ -51,9 +51,9 @@ def _resolve_run_path(run_dir: str) -> str:
         full_path = os.path.join(PROJECT_ROOT, run_dir)
     resolved = str(Path(full_path).resolve())
     if not resolved.startswith(str(Path(PROJECT_ROOT).resolve())):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="访问被拒绝")
     if not os.path.isdir(resolved):
-        raise HTTPException(status_code=404, detail=f"Directory not found: {run_dir}")
+        raise HTTPException(status_code=404, detail=f"目录未找到：{run_dir}")
     return resolved
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
             save_ingestion_cache(ingestion_cache, cache_file)
 
         if not papers:
-            emitter.emit(Event(event_type="error", stage_name="ingest", message="No papers found", recoverable=False))
+            emitter.emit(Event(event_type="error", stage_name="ingest", message="未找到论文", recoverable=False))
             return
 
         emitter.emit(RunStarted(run_dir=run_dir, mode=mode, paper_count=len(papers)))
@@ -273,7 +273,7 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
 
         for i, paper in enumerate(papers, 1):
             if _cancel_flags.get(run_id, False):
-                emitter.emit(Event(event_type="error", stage_name="cancel", message="Run cancelled by user", recoverable=True))
+                emitter.emit(Event(event_type="error", stage_name="cancel", message="用户取消了运行", recoverable=True))
                 break
 
             # Skip already-processed papers (idempotent resume)
@@ -330,7 +330,7 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
                                            result_summary=f"{len(extractions)} criteria"))
 
                 if not extractions:
-                    emitter.emit(Error(stage_name="Extraction", message=f"No extractions for {paper.filename} — skipping", recoverable=True))
+                    emitter.emit(Error(stage_name="Extraction", message=f"论文 {paper.filename} 无评估结果 — 跳过", recoverable=True))
                     continue
 
                 # Stage 3: Fact-Checker
@@ -357,7 +357,7 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
                 else:
                     review = synthesize_grounded_review(paper, extractions, config, baseline=baseline, fact_checks=fact_checks)
                 emitter.emit(StageCompleted(stage_name="Synthesis", duration_s=time.time()-t0,
-                                           result_summary=f"Score: {review.overall_score:.1f}" if review else "Failed"))
+                                           result_summary=f"分数：{review.overall_score:.1f}" if review else "失败"))
             else:
                 # Standard pipeline
                 emitter.emit(StageStarted(stage_name="Extraction", paper_filename=paper.filename))
@@ -367,14 +367,14 @@ def _run_pipeline(run_dir: str, run_id: str, mode: str, config_overrides: Dict[s
                                            result_summary=f"{len(extractions)} criteria"))
 
                 if not extractions:
-                    emitter.emit(Error(stage_name="Extraction", message=f"No extractions for {paper.filename} — skipping", recoverable=True))
+                    emitter.emit(Error(stage_name="Extraction", message=f"论文 {paper.filename} 无评估结果 — 跳过", recoverable=True))
                     continue
 
                 emitter.emit(StageStarted(stage_name="Synthesis", paper_filename=paper.filename))
                 t0 = time.time()
                 review = synthesize_review(paper, extractions, config)
                 emitter.emit(StageCompleted(stage_name="Synthesis", duration_s=time.time()-t0,
-                                           result_summary=f"Score: {review.overall_score:.1f}" if review else "Failed"))
+                                           result_summary=f"分数：{review.overall_score:.1f}" if review else "失败"))
 
             if not review:
                 continue
@@ -462,14 +462,14 @@ async def start_run(request: Request):
     config_overrides = body.get("config_overrides", {})
 
     if not run_dir:
-        raise HTTPException(status_code=400, detail="run_dir is required")
+        raise HTTPException(status_code=400, detail="缺少 run_dir 参数")
 
     run_dir = _resolve_run_path(run_dir)
 
     # Prevent concurrent runs on the same directory
     for rid, info in _active_runs.items():
         if info["run_dir"] == run_dir:
-            raise HTTPException(status_code=409, detail=f"A run is already active on this directory (run_id: {rid})")
+            raise HTTPException(status_code=409, detail=f"该目录上已有运行中的任务（run_id: {rid}）")
 
     run_id = f"{os.path.basename(run_dir)}_{int(time.time())}"
 
@@ -532,7 +532,7 @@ async def get_status(run_id: str):
 @app.post("/api/stop/{run_id}")
 async def stop_run(run_id: str):
     if run_id not in _active_runs:
-        raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(status_code=404, detail="运行未找到")
     _cancel_flags[run_id] = True
     return {"status": "cancelling"}
 
@@ -595,7 +595,7 @@ def _run_batch(dirs: List[str], mode: str):
             _batch_state["completed"].append(dir_name)
         except Exception as e:
             _batch_state["failed"].append({"dir": dir_name, "error": str(e)})
-            emitter.emit(Error(stage_name="batch", message=f"Failed on {dir_name}: {e}", recoverable=True))
+            emitter.emit(Error(stage_name="batch", message=f"处理 {dir_name} 失败：{e}", recoverable=True))
 
     total_time = time.time() - _batch_state["started_at"]
     sse = get_sse_backend()
@@ -620,9 +620,9 @@ def _run_batch(dirs: List[str], mode: str):
 @app.post("/api/batch-start")
 async def batch_start(request: Request):
     if _batch_state.get("active"):
-        raise HTTPException(status_code=409, detail="A batch is already running")
+        raise HTTPException(status_code=409, detail="已有批量任务在运行")
     if _active_runs:
-        raise HTTPException(status_code=409, detail="A single run is already active — stop it first")
+        raise HTTPException(status_code=409, detail="有单目录任务正在运行 — 请先停止")
 
     body = await request.json()
     mode = body.get("mode", "standard")
@@ -635,7 +635,7 @@ async def batch_start(request: Request):
         dirs = [d["path"] for d in all_dirs]
 
     if not dirs:
-        raise HTTPException(status_code=400, detail="No run directories found")
+        raise HTTPException(status_code=400, detail="未找到任何运行目录")
 
     emitter = get_emitter()
     sse = get_sse_backend()
@@ -652,7 +652,7 @@ async def batch_start(request: Request):
 @app.post("/api/batch-stop")
 async def batch_stop():
     if not _batch_state.get("active"):
-        raise HTTPException(status_code=404, detail="No batch running")
+        raise HTTPException(status_code=404, detail="没有正在运行的批量任务")
     _batch_state["cancelled"] = True
     for rid in list(_cancel_flags.keys()):
         _cancel_flags[rid] = True
@@ -780,9 +780,9 @@ async def get_review(run_dir: str, filename: str):
     reviews_dir = Path(full_path) / "outputs" / "reviews"
     review_path = (reviews_dir / filename).resolve()
     if not str(review_path).startswith(str(reviews_dir.resolve())):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="访问被拒绝")
     if not review_path.exists():
-        raise HTTPException(status_code=404, detail="Review not found")
+        raise HTTPException(status_code=404, detail="评审未找到")
     return FileResponse(str(review_path), media_type="text/markdown")
 
 
@@ -800,7 +800,7 @@ async def get_criteria_raw(run_dir: str):
     if not os.path.exists(criteria_path):
         criteria_path = os.path.join(PROJECT_ROOT, "config", "criteria.yaml")
     if not os.path.exists(criteria_path):
-        raise HTTPException(status_code=404, detail="criteria.yaml not found")
+        raise HTTPException(status_code=404, detail="criteria.yaml 未找到")
     with open(criteria_path) as f:
         return {"content": f.read()}
 
@@ -814,7 +814,7 @@ async def update_criteria(run_dir: str, request: Request):
     try:
         yaml.safe_load(content)
     except yaml.YAMLError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+        raise HTTPException(status_code=400, detail=f"YAML 格式无效：{e}")
 
     full_path = _resolve_run_path(run_dir)
     criteria_path = os.path.join(full_path, "input", "criteria.yaml")
@@ -824,7 +824,7 @@ async def update_criteria(run_dir: str, request: Request):
         with open(criteria_path, "w") as f:
             f.write(content)
     except (IOError, OSError) as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write criteria: {e}")
+        raise HTTPException(status_code=500, detail=f"写入评审标准失败：{e}")
     return {"success": True}
 
 
@@ -853,23 +853,23 @@ async def update_config(run_dir: str, request: Request):
 
     # Sanitize NaN/Inf from numeric inputs
     if isinstance(value, float) and (value != value or abs(value) == float("inf")):
-        raise HTTPException(status_code=400, detail="Value must be a valid number")
+        raise HTTPException(status_code=400, detail="值必须是有效数字")
 
     # Prevent newline injection
     if isinstance(value, str):
         value = value.replace("\n", "").replace("\r", "")
 
     if not key:
-        raise HTTPException(status_code=400, detail="key is required")
+        raise HTTPException(status_code=400, detail="缺少 key 参数")
     if "KEY" in key.upper() or "SECRET" in key.upper():
-        raise HTTPException(status_code=400, detail="Cannot modify API keys via the dashboard")
+        raise HTTPException(status_code=400, detail="不能通过仪表盘修改 API 密钥")
     if key not in ALLOWED_KEYS:
-        raise HTTPException(status_code=400, detail=f"Key '{key}' is not editable. Allowed: {sorted(ALLOWED_KEYS)}")
+        raise HTTPException(status_code=400, detail=f"键 '{key}' 不可编辑。允许的键：{sorted(ALLOWED_KEYS)}")
 
     full_path = _resolve_run_path(run_dir)
     env_path = os.path.join(full_path, "input", ".env")
     if not os.path.exists(env_path):
-        raise HTTPException(status_code=404, detail=".env not found")
+        raise HTTPException(status_code=404, detail=".env 未找到")
 
     # Read, update, write back — preserving comments and order
     lines = []
@@ -914,7 +914,7 @@ async def update_prompt(filename: str, request: Request):
         "synthesizer_system.txt", "synthesizer_user.txt",
     }
     if filename not in ALLOWED_PROMPTS:
-        raise HTTPException(status_code=400, detail=f"Unknown prompt file: {filename}")
+        raise HTTPException(status_code=400, detail=f"未知提示词文件：{filename}")
 
     body = await request.json()
     content = body.get("content", "")
@@ -924,7 +924,7 @@ async def update_prompt(filename: str, request: Request):
         with open(prompt_path, "w") as f:
             f.write(content)
     except (IOError, OSError) as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write prompt: {e}")
+        raise HTTPException(status_code=500, detail=f"写入提示词失败：{e}")
     return {"success": True}
 
 
@@ -947,14 +947,14 @@ async def update_literature_sources(request: Request):
     try:
         yaml.safe_load(content)
     except yaml.YAMLError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+        raise HTTPException(status_code=400, detail=f"YAML 格式无效：{e}")
 
     path = os.path.join(PROJECT_ROOT, "config", "literature_sources.yaml")
     try:
         with open(path, "w") as f:
             f.write(content)
     except (IOError, OSError) as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write literature sources: {e}")
+        raise HTTPException(status_code=500, detail=f"写入文献源配置失败：{e}")
     return {"success": True}
 
 
@@ -1002,18 +1002,18 @@ async def update_model_costs(request: Request):
         if data and "models" in data:
             for name, info in data["models"].items():
                 if not isinstance(info, dict):
-                    raise ValueError(f"Model '{name}' must be a mapping")
+                    raise ValueError(f"模型 '{name}' 必须是字典格式")
         elif data is not None:
-            raise ValueError("YAML must contain a 'models' key")
+            raise ValueError("YAML 必须包含 'models' 键")
     except (yaml.YAMLError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+        raise HTTPException(status_code=400, detail=f"YAML 格式无效：{e}")
 
     path = os.path.join(PROJECT_ROOT, "config", "model_costs.yaml")
     try:
         with open(path, "w") as f:
             f.write(content)
     except (IOError, OSError) as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write model costs: {e}")
+        raise HTTPException(status_code=500, detail=f"写入模型费用失败：{e}")
 
     # Re-register models with litellm
     from core.llm_wrapper import _load_and_register_custom_models
@@ -1028,7 +1028,7 @@ async def lookup_model_cost(model_name: str):
     import litellm
     info = litellm.model_cost.get(model_name, {})
     if not info:
-        raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found in litellm registry")
+        raise HTTPException(status_code=404, detail=f"模型 '{model_name}' 在 litellm 注册表中未找到")
     return {
         "model": model_name,
         "input_cost_per_million": round(info.get("input_cost_per_token", 0) * 1_000_000, 4),
@@ -1070,7 +1070,7 @@ def _run_judge_pipeline(run_dir: str, run_id: str):
         csv_files = sorted(glob.glob(os.path.join(reports_dir, "report_consolidated_*.csv")))
         if len(csv_files) < 2:
             emitter.emit(Error(stage_name="Judge-Compare",
-                               message="Need at least 2 consolidated reports to compare. Run reviews with different models first.",
+                               message="需要至少 2 份汇总报告才能对比。请先用不同模型运行评审。",
                                recoverable=False))
             return
 
@@ -1118,7 +1118,7 @@ async def start_judge(run_dir: str):
     if len(csv_files) < 2:
         raise HTTPException(
             status_code=400,
-            detail="Need at least 2 consolidated reports. Run reviews with different models first.",
+            detail="需要至少 2 份汇总报告。请先用不同模型运行评审。",
         )
 
     run_id = f"judge_{os.path.basename(run_dir)}_{int(time.time())}"
@@ -1158,6 +1158,70 @@ async def judge_status(run_id: str):
     if run_id in _active_judges:
         return {"status": "running"}
     return {"status": "completed"}
+
+
+# ---------------------------------------------------------------------------
+# File Upload
+# ---------------------------------------------------------------------------
+
+ALLOWED_EXTENSIONS = {".pdf", ".md", ".txt", ".docx"}
+
+@app.post("/api/upload/{run_dir:path}")
+async def upload_papers(run_dir: str, files: list[UploadFile] = File(...)):
+    """Upload one or more papers to a run directory's papers folder."""
+    run_path = _resolve_run_path(run_dir)
+    papers_dir = os.path.join(run_path, "papers")
+    os.makedirs(papers_dir, exist_ok=True)
+
+    uploaded = []
+    skipped = []
+
+    for file in files:
+        if not file.filename:
+            continue
+
+        ext = Path(file.filename).suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            skipped.append({"filename": file.filename, "reason": f"不支持的文件类型 {ext}，仅支持 PDF/MD/TXT/DOCX"})
+            continue
+
+        dest = os.path.join(papers_dir, file.filename)
+        # If file exists, add suffix to avoid overwriting
+        if os.path.exists(dest):
+            base = Path(file.filename).stem
+            counter = 1
+            while os.path.exists(os.path.join(papers_dir, f"{base}_{counter}{ext}")):
+                counter += 1
+            dest = os.path.join(papers_dir, f"{base}_{counter}{ext}")
+            uploaded.append({"filename": os.path.basename(dest), "original": file.filename, "renamed": True})
+        else:
+            uploaded.append({"filename": file.filename, "original": file.filename, "renamed": False})
+
+        content = await file.read()
+        with open(dest, "wb") as f:
+            f.write(content)
+
+    return {
+        "success": True,
+        "uploaded": uploaded,
+        "skipped": skipped,
+        "papers_dir": papers_dir,
+        "total": len(uploaded),
+    }
+
+@app.get("/api/papers/{run_dir:path}")
+async def list_papers(run_dir: str):
+    """List papers currently in a run directory."""
+    run_path = _resolve_run_path(run_dir)
+    papers_dir = os.path.join(run_path, "papers")
+    if not os.path.isdir(papers_dir):
+        return {"papers": [], "count": 0}
+    papers = sorted(
+        [f for f in os.listdir(papers_dir) if Path(f).suffix.lower() in ALLOWED_EXTENSIONS],
+        key=lambda f: os.path.getmtime(os.path.join(papers_dir, f)),
+        reverse=True,
+    )
+    return {"papers": papers, "count": len(papers), "papers_dir": papers_dir}
 
 
 # ---------------------------------------------------------------------------

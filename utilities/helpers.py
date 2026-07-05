@@ -48,11 +48,33 @@ def get_scale_definition(scale: dict) -> str:
     return description
 
 def get_config_hash(config: 'Config') -> str:
-    """Generate a hash of the LLM configuration to detect parameter changes."""
+    """Generate a hash of the FULL configuration (LLM + criteria + prompts)
+    to detect any parameter/criteria/prompt changes that warrant re-processing."""
     llm_config = config.get_llm_config()
     
-    # Create a normalized string representation of the config
-    config_str = json.dumps(llm_config, sort_keys=True)
+    # Include criteria in hash
+    criteria_config = config.criteria_config
+    
+    # Include prompt templates in hash
+    prompt_files = {}
+    import glob as glob_mod
+    prompts_dir = os.path.join(config.config_path, "prompts")
+    if os.path.isdir(prompts_dir):
+        for pfile in sorted(os.listdir(prompts_dir)):
+            if pfile.endswith(".txt"):
+                try:
+                    with open(os.path.join(prompts_dir, pfile), 'r', encoding='utf-8') as f:
+                        prompt_files[pfile] = f.read()
+                except OSError:
+                    pass
+    
+    # Create a normalized string representation of all config
+    full_config = {
+        "llm": llm_config,
+        "criteria": criteria_config,
+        "prompts": prompt_files,
+    }
+    config_str = json.dumps(full_config, sort_keys=True, default=str)
     
     # Generate hash
     return hashlib.md5(config_str.encode()).hexdigest()

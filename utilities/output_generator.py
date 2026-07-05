@@ -203,6 +203,8 @@ def save_review_markdown(
 
         # Overall Assessment
         f.write(f"## Overall Assessment\n\n")
+        if hasattr(review, 'verdict') and review.verdict:
+            f.write(f"**Verdict:** {review.verdict}\n\n")
         f.write(f"**Recommendation:** **{review.recommendation.upper()}**\n")
         f.write(f"**Overall Score:** **{review.overall_score:.1f} / 100**\n")
         f.write(f"**Rationale:** {review.recommendation_rationale}\n")
@@ -260,6 +262,10 @@ def save_review_markdown(
             if breakdown:
                 f.write(f"### {crit_id} (Weight: {breakdown.weight}%, Score: {breakdown.score})\n")
                 f.write(f"{narrative}\n\n")
+
+        # Technical Discussion (if available)
+        if hasattr(review, 'technical_discussion') and review.technical_discussion:
+            f.write(f"## Technical Discussion\n\n{review.technical_discussion}\n\n")
 
         # Metadata
         f.write(f"## Metadata\n\n")

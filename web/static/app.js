@@ -1,28 +1,34 @@
 /**
- * Agentic Paper Review System - Dashboard Frontend
+ * 智能论文评审系统 - 仪表盘前端
  */
 
-// State
+// 状态
 let currentRunDir = "";
 let currentRunId = null;
 let eventSource = null;
 let runStartTime = null;
 let elapsedInterval = null;
 let sortColumn = "display_date";
-let sortAsc = false;  // default: newest first
+let sortAsc = false;  // 默认：最新在前
 let promptFiles = [];        // [{filename, content}, ...]
 let currentPromptFilename = "";
-let configDirty = {};        // {key: value} pending saves
-let originalConfig = {};     // snapshot before edits
+let configDirty = {};        // {key: value} 待保存的修改
+let originalConfig = {};     // 编辑前的快照
 let batchActive = false;
 let batchDirs = [];
-let batchRunId = null;       // SSE run_id for current batch directory
+let batchRunId = null;       // 当前批量目录的 SSE run_id
 
-// DOM refs
+// DOM 引用
 const runSelector = document.getElementById("run-selector");
 const modeSelector = document.getElementById("mode-selector");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
+const uploadBtn = document.getElementById("upload-btn");
+const uploadInput = document.getElementById("upload-input");
+const paperCount = document.getElementById("paper-count");
+const dropOverlay = document.getElementById("drop-overlay");
+const uploadToast = document.getElementById("upload-toast");
+const uploadToastMsg = document.getElementById("upload-toast-msg");
 const progressBar = document.getElementById("progress-bar");
 const progressText = document.getElementById("progress-text");
 const progressEta = document.getElementById("progress-eta");
@@ -71,7 +77,7 @@ const judgeModal = document.getElementById("judge-modal");
 const judgeModalBody = document.getElementById("judge-modal-body");
 const judgeModalClose = document.getElementById("judge-modal-close");
 
-// ---- Initialization ----
+// ---- 初始化 ----
 
 async function init() {
     await loadRuns();
@@ -80,50 +86,55 @@ async function init() {
     stopBtn.addEventListener("click", stopRun);
     reviewModalClose.addEventListener("click", () => reviewModal.style.display = "none");
 
-    // Sidebar tabs
+    // 侧边栏标签页
     document.querySelectorAll(".sidebar-tab").forEach(tab => {
         tab.addEventListener("click", () => switchSidebarTab(tab.dataset.tab));
     });
 
-    // Collapsible config panel
+    // 可折叠配置面板
     document.getElementById("panel-toggle").addEventListener("click", toggleConfigPanel);
 
-    // Prompt editor
+    // 提示词编辑器
     promptSelector.addEventListener("change", onPromptSelected);
     promptSaveBtn.addEventListener("click", savePrompt);
     promptReloadBtn.addEventListener("click", reloadPrompt);
 
-    // Criteria editor
+    // 评审标准编辑器
     criteriaSaveBtn.addEventListener("click", saveCriteria);
     criteriaReloadBtn.addEventListener("click", reloadCriteria);
 
-    // Sources editor
+    // 文献源编辑器
     sourcesSaveBtn.addEventListener("click", saveSources);
     sourcesReloadBtn.addEventListener("click", reloadSources);
 
-    // Config save
+    // 配置保存
     configSaveBtn.addEventListener("click", saveConfig);
 
-    // Costs editor
+    // 费用编辑器
     costsSaveBtn.addEventListener("click", saveCosts);
     costsReloadBtn.addEventListener("click", reloadCosts);
     costsLookupBtn.addEventListener("click", lookupModelCost);
 
-    // Judge
+    // 裁判
     judgeBtn.addEventListener("click", startJudge);
     judgeModalClose.addEventListener("click", () => judgeModal.style.display = "none");
     if (viewVerdictsBtn) viewVerdictsBtn.addEventListener("click", showJudgeVerdicts);
 
-    // Batch
+    // 批量处理
     batchBtn.addEventListener("click", startBatch);
     batchStopBtn.addEventListener("click", stopBatch);
 
-    // Load global resources
+    // 上传
+    uploadBtn.addEventListener("click", () => uploadInput.click());
+    uploadInput.addEventListener("change", handleFileSelect);
+    setupDragDrop();
+
+    // 加载全局资源
     await loadPrompts();
     await loadSources();
     await loadCosts();
 
-    // Sort headers
+    // 排序表头
     document.querySelectorAll("#results-table th[data-sort]").forEach(th => {
         th.addEventListener("click", () => {
             const col = th.dataset.sort;
@@ -133,10 +144,10 @@ async function init() {
         });
     });
 
-    // Refresh reports button
+    // 刷新报告按钮
     document.getElementById("refresh-reports-btn").addEventListener("click", loadResults);
 
-    // Warn before leaving with unsaved changes
+    // 未保存修改时提醒
     window.addEventListener("beforeunload", (e) => {
         if (Object.keys(configDirty).length > 0) {
             e.preventDefault();
@@ -145,7 +156,7 @@ async function init() {
     });
 }
 
-// ---- API helpers ----
+// ---- API 辅助 ----
 
 async function api(path, opts = {}) {
     const res = await fetch(path, opts);
@@ -160,15 +171,15 @@ async function api(path, opts = {}) {
     return res.json();
 }
 
-// ---- Run Directory Selection ----
+// ---- 运行目录选择 ----
 
 async function loadRuns() {
     const data = await api("/api/runs");
-    runSelector.innerHTML = '<option value="">Select run directory...</option>';
+    runSelector.innerHTML = '<option value="">选择运行目录...</option>';
     for (const run of data.runs) {
         const opt = document.createElement("option");
         opt.value = run.name;
-        opt.textContent = `${run.name} (${run.paper_count} papers)`;
+        opt.textContent = `${run.name}（${run.paper_count} 篇论文）`;
         runSelector.appendChild(opt);
     }
 }
@@ -177,7 +188,7 @@ async function onRunSelected() {
     currentRunDir = runSelector.value;
     startBtn.disabled = !currentRunDir;
 
-    // Clear stale state from previous run
+    // 清除上一个运行目录的过期状态
     reportsData = [];
     renderResults([]);
     configDirty = {};
@@ -188,30 +199,35 @@ async function onRunSelected() {
     progressText.textContent = "";
     progressEta.textContent = "";
     costDisplay.textContent = "$0.00";
-    elapsedDisplay.textContent = "0s";
+    elapsedDisplay.textContent = "0秒";
     currentPaperDisplay.textContent = "";
     clearStages();
     if (viewVerdictsBtn) viewVerdictsBtn.style.display = "none";
 
     if (!currentRunDir) {
-        configContent.innerHTML = '<p class="placeholder-text">Select a run directory to view config</p>';
-        criteriaEditorWrap.innerHTML = '<p class="placeholder-text">Select a run directory to edit criteria</p>';
+        configContent.innerHTML = '<p class="placeholder-text">选择运行目录以查看配置</p>';
+        criteriaEditorWrap.innerHTML = '<p class="placeholder-text">选择运行目录以编辑评审标准</p>';
+        uploadBtn.disabled = true;
+        paperCount.textContent = "📄 0";
         return;
     }
 
-    // Load editable config
+    uploadBtn.disabled = false;
+    await refreshPaperCount();
+
+    // 加载可编辑配置
     await loadConfig();
 
-    // Load criteria as raw YAML
+    // 加载评审标准（原始 YAML）
     await loadCriteria();
 
-    // Load existing results
+    // 加载已有结果
     await loadResults();
     await loadReviews();
     await checkJudgeVerdicts();
 }
 
-// ---- Start / Stop ----
+// ---- 开始 / 停止 ----
 
 async function startRun() {
     if (!currentRunDir) return;
@@ -236,7 +252,7 @@ async function startRun() {
         connectSSE();
         startElapsedTimer();
     } catch (e) {
-        addLog("Failed to start run: " + e.message, "error");
+        addLog("启动失败：" + e.message, "error");
         startBtn.disabled = false;
         stopBtn.style.display = "none";
     }
@@ -246,9 +262,9 @@ async function stopRun() {
     if (!currentRunId) return;
     try {
         await api(`/api/stop/${currentRunId}`, { method: "POST" });
-        addLog("Cancellation requested...", "warning");
+        addLog("已请求取消...", "warning");
     } catch (e) {
-        addLog("Stop failed: " + e.message, "error");
+        addLog("停止失败：" + e.message, "error");
     }
 }
 
@@ -283,10 +299,10 @@ function _openSSE() {
         eventSource = null;
         sseReconnectAttempts++;
         if (sseReconnectAttempts <= SSE_MAX_RECONNECT) {
-            addLog(`Connection lost — reconnecting (${sseReconnectAttempts}/${SSE_MAX_RECONNECT})...`, "warning");
+            addLog(`连接断开 — 正在重连（${sseReconnectAttempts}/${SSE_MAX_RECONNECT}）...`, "warning");
             setTimeout(_openSSE, 2000 * sseReconnectAttempts);
         } else {
-            addLog("Connection lost. Refresh the page to reconnect.", "error");
+            addLog("连接断开。请刷新页面重新连接。", "error");
         }
     };
 }
@@ -294,34 +310,34 @@ function _openSSE() {
 function handleEvent(evt) {
     switch (evt.event_type) {
         case "run_started":
-            addLog(`Run started: ${evt.mode} mode, ${evt.paper_count} papers`, "info");
+            addLog(`评审开始：${evt.mode === "standard" ? "标准" : "文献增强"}模式，${evt.paper_count} 篇论文`, "info");
             break;
 
         case "stage_started":
             activateStage(evt.stage_name);
-            addLog(`[${evt.stage_name}] Starting for ${evt.paper_filename}`, "info");
+            addLog(`[${stageLabel(evt.stage_name)}] 开始处理 ${evt.paper_filename}`, "info");
             currentPaperDisplay.textContent = evt.paper_filename;
             break;
 
         case "stage_progress":
-            addLog(`[${evt.stage_name}] ${evt.current}/${evt.total} ${evt.detail}`, "info");
+            addLog(`[${stageLabel(evt.stage_name)}] ${evt.current}/${evt.total} ${evt.detail}`, "info");
             break;
 
         case "stage_completed":
             completeStage(evt.stage_name);
-            addLog(`[${evt.stage_name}] Done in ${evt.duration_s?.toFixed(1)}s - ${evt.result_summary}`, "success");
+            addLog(`[${stageLabel(evt.stage_name)}] 完成，耗时 ${evt.duration_s?.toFixed(1)}秒 — ${evt.result_summary}`, "success");
             break;
 
         case "paper_completed":
-            addLog(`Paper done: ${evt.paper_filename} | Score: ${evt.score?.toFixed(1)} | ${evt.recommendation} | $${evt.cost?.toFixed(4)}`, "success");
+            addLog(`论文完成：${evt.paper_filename} | 分数：${evt.score?.toFixed(1)} | ${evt.recommendation} | $${evt.cost?.toFixed(4)}`, "success");
             break;
 
         case "run_progress": {
             const pct = evt.papers_total > 0 ? (100 * evt.papers_done / evt.papers_total) : 0;
             progressBar.style.width = pct + "%";
-            progressText.textContent = `${evt.papers_done}/${evt.papers_total} papers (${pct.toFixed(0)}%)`;
+            progressText.textContent = `${evt.papers_done}/${evt.papers_total} 篇（${pct.toFixed(0)}%）`;
             if (evt.estimated_remaining_s > 0) {
-                progressEta.textContent = `ETA: ${formatDuration(evt.estimated_remaining_s)}`;
+                progressEta.textContent = `预计剩余：${formatDuration(evt.estimated_remaining_s)}`;
             }
             break;
         }
@@ -331,27 +347,37 @@ function handleEvent(evt) {
             break;
 
         case "error":
-            addLog(`[${evt.stage_name}] ${evt.message}`, evt.recoverable ? "warning" : "error");
+            addLog(`[${stageLabel(evt.stage_name)}] ${evt.message}`, evt.recoverable ? "warning" : "error");
             break;
 
         case "run_completed":
-            addLog(`Run completed: ${evt.total_papers} papers, $${evt.total_cost?.toFixed(4)}, ${formatDuration(evt.total_time_s)}`, "success");
+            addLog(`评审完成：${evt.total_papers} 篇论文，$${evt.total_cost?.toFixed(4)}，耗时 ${formatDuration(evt.total_time_s)}`, "success");
             progressBar.style.width = "100%";
-            progressText.textContent = "Complete";
+            progressText.textContent = "完成";
             progressEta.textContent = "";
             if (!batchActive) finishRun();
             break;
 
         case "batch_dir_started":
-            addLog(`[Batch] Starting ${evt.dir_name} (${evt.dir_index + 1}/${evt.dir_total})`, "info");
+            addLog(`[批量] 开始处理 ${evt.dir_name}（${evt.dir_index + 1}/${evt.dir_total}）`, "info");
             updateBatchProgress(evt.dir_index, evt.dir_total, evt.dir_name);
             break;
 
         case "batch_completed":
-            addLog(`[Batch] Done: ${evt.completed} completed, ${evt.failed} failed, ${formatDuration(evt.total_time_s)}`, "success");
+            addLog(`[批量] 完成：${evt.completed} 成功，${evt.failed} 失败，耗时 ${formatDuration(evt.total_time_s)}`, "success");
             finishBatch();
             break;
     }
+}
+
+function stageLabel(name) {
+    const map = {
+        "Ingestion": "论文解析", "Librarian": "文献检索",
+        "Extraction": "逐项评估", "Fact-Check": "事实核查",
+        "Synthesis": "综合评审", "Output": "输出结果",
+        "Judge-Compare": "模型对比", "Judge-Adjudicate": "裁判裁决"
+    };
+    return map[name] || name;
 }
 
 function finishRun() {
@@ -364,7 +390,7 @@ function finishRun() {
     checkJudgeVerdicts();
 }
 
-// ---- Reports Table ----
+// ---- 报告表格 ----
 
 let reportsData = [];
 
@@ -381,7 +407,7 @@ async function loadResults() {
 }
 
 async function loadReviews() {
-    // Reviews are loaded on demand when clicking "View"
+    // 评审详情按需加载（点击"查看"时）
 }
 
 function sortAndRenderResults() {
@@ -422,12 +448,12 @@ function renderResults(results) {
             <td><span class="rec-badge ${recClass}">${escapeHtml(r.recommendation || "-")}</span></td>
             <td>${r.total_cost != null && r.total_cost !== "" ? "$" + Number(r.total_cost).toFixed(4) : "-"}</td>
             <td>${r.confidence != null && r.confidence !== "" ? (Number(r.confidence) * 100).toFixed(0) + "%" : "-"}</td>
-            <td><button class="btn-view" data-filename="${escapeHtml(r.filename)}">View</button></td>
+            <td><button class="btn-view" data-filename="${escapeHtml(r.filename)}">查看</button></td>
         `;
         resultsTbody.appendChild(tr);
     }
 
-    // Attach view handlers — direct filename match, no guessing
+    // 绑定查看按钮事件
     resultsTbody.querySelectorAll(".btn-view").forEach(btn => {
         btn.addEventListener("click", () => showReviewByFilename(btn.dataset.filename));
     });
@@ -436,8 +462,8 @@ function renderResults(results) {
 async function showReviewByFilename(filename) {
     if (!currentRunDir) return;
     const paperName = filename.split("_20")[0] || filename;
-    reviewModalTitle.textContent = `Review: ${paperName}`;
-    reviewModalBody.innerHTML = "Loading...";
+    reviewModalTitle.textContent = `评审：${paperName}`;
+    reviewModalBody.innerHTML = "加载中...";
 
     try {
         const res = await fetch(`/api/review/${currentRunDir}/${filename}`);
@@ -446,21 +472,22 @@ async function showReviewByFilename(filename) {
         reviewModalBody.innerHTML = renderMarkdown(text);
         reviewModal.style.display = "flex";
     } catch (e) {
-        reviewModalBody.innerHTML = "Error loading review: " + e.message;
+        reviewModalBody.innerHTML = "加载评审失败：" + e.message;
     }
 }
 
 function getRecClass(rec) {
     if (!rec) return "";
     const l = rec.toLowerCase();
-    if (l.includes("accept") && !l.includes("revision")) return "rec-accept";
-    if (l.includes("accept with revision") || l.includes("minor")) return "rec-revision";
-    if (l.includes("revise") || l.includes("resubmit") || l.includes("major")) return "rec-resubmit";
-    if (l.includes("reject")) return "rec-reject";
+    // 支持中文建议标签
+    if (l.includes("直接接收") || (l.includes("accept") && !l.includes("revision"))) return "rec-accept";
+    if (l.includes("修改后接收") || l.includes("accept with revision") || l.includes("minor")) return "rec-revision";
+    if (l.includes("大修") || l.includes("revise") || l.includes("resubmit") || l.includes("major")) return "rec-resubmit";
+    if (l.includes("拒稿") || l.includes("reject")) return "rec-reject";
     return "";
 }
 
-// ---- Stage Indicators ----
+// ---- 阶段指示器 ----
 
 const stageMap = {
     "Ingestion": "stage-ingest",
@@ -497,19 +524,19 @@ function clearStages() {
     });
 }
 
-// ---- Log ----
+// ---- 日志 ----
 
 function addLog(message, level = "info") {
     const entry = document.createElement("div");
     entry.className = `log-entry log-${level}`;
     const now = new Date();
-    const time = now.toLocaleTimeString("en-US", { hour12: false });
+    const time = now.toLocaleTimeString("zh-CN", { hour12: false });
     entry.innerHTML = `<span class="log-time">${time}</span><span class="log-msg">${escapeHtml(message)}</span>`;
     logContent.appendChild(entry);
     logContent.scrollTop = logContent.scrollHeight;
 }
 
-// ---- Helpers ----
+// ---- 工具函数 ----
 
 function startElapsedTimer() {
     if (elapsedInterval) clearInterval(elapsedInterval);
@@ -522,9 +549,9 @@ function startElapsedTimer() {
 }
 
 function formatDuration(seconds) {
-    if (seconds < 60) return `${seconds.toFixed(0)}s`;
-    if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
-    return `${(seconds / 3600).toFixed(1)}h`;
+    if (seconds < 60) return `${seconds.toFixed(0)}秒`;
+    if (seconds < 3600) return `${(seconds / 60).toFixed(1)}分钟`;
+    return `${(seconds / 3600).toFixed(1)}小时`;
 }
 
 function escapeHtml(str) {
@@ -533,37 +560,29 @@ function escapeHtml(str) {
 }
 
 function renderMarkdown(text) {
-    // Simple markdown-to-HTML for display
     let html = escapeHtml(text);
-    // Headers
     html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
     html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
     html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-    // Bold
     html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    // Italic
     html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
-    // Lists
     html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
     html = html.replace(/^(\d+)\. (.+)$/gm, "<li>$2</li>");
-    // Paragraphs (double newline)
     html = html.replace(/\n\n/g, "</p><p>");
     html = "<p>" + html + "</p>";
-    // Code
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-    // Horizontal rule
     html = html.replace(/^---$/gm, "<hr>");
     return html;
 }
 
-// ---- Sidebar Tab Switching ----
+// ---- 侧边栏标签切换 ----
 
 function toggleConfigPanel() {
     const panel = document.getElementById("config-panel");
     const btn = document.getElementById("panel-toggle");
     panel.classList.toggle("collapsed");
     btn.innerHTML = panel.classList.contains("collapsed") ? "&rsaquo;" : "&lsaquo;";
-    btn.title = panel.classList.contains("collapsed") ? "Expand panel" : "Collapse panel";
+    btn.title = panel.classList.contains("collapsed") ? "展开面板" : "折叠面板";
 }
 
 function switchSidebarTab(tabName) {
@@ -573,7 +592,7 @@ function switchSidebarTab(tabName) {
     document.getElementById(`tab-${tabName}`).classList.add("active");
 }
 
-// ---- Config Editor ----
+// ---- 配置编辑器 ----
 
 const PROVIDER_OPTIONS = ["openai", "anthropic", "deepseek", "google", "gemini", "mistral", "ollama"];
 const PROVIDER_KEYS = ["PROVIDER_EXTRACTION", "PROVIDER_SYNTHESIS", "JUDGE_PROVIDER"];
@@ -585,7 +604,7 @@ async function loadConfig() {
         originalConfig = data.config || {};
         renderConfigEditor(originalConfig);
     } catch {
-        configContent.innerHTML = '<p class="placeholder-text">Could not load config</p>';
+        configContent.innerHTML = '<p class="placeholder-text">无法加载配置</p>';
     }
 }
 
@@ -596,7 +615,7 @@ function renderConfigEditor(config) {
         if (isMasked) {
             html += `<div class="config-item config-locked">
                 <span class="config-key">${escapeHtml(k)}</span>
-                <span class="config-value locked">***<span class="lock-hint">edit .env directly</span></span>
+                <span class="config-value locked">***<span class="lock-hint">请直接编辑 .env 文件</span></span>
             </div>`;
             continue;
         }
@@ -619,12 +638,11 @@ function renderConfigEditor(config) {
             ${inputHtml}
         </div>`;
     }
-    configContent.innerHTML = html || '<p class="placeholder-text">No config found</p>';
+    configContent.innerHTML = html || '<p class="placeholder-text">未找到配置</p>';
 
-    // Track changes
+    // 跟踪修改
     configContent.querySelectorAll(".config-input").forEach(el => {
         el.addEventListener("change", () => {
-            // Always store as string to avoid NaN in JSON
             configDirty[el.dataset.key] = String(el.value);
             configSaveBtn.style.display = Object.keys(configDirty).length ? "inline-block" : "none";
         });
@@ -634,7 +652,6 @@ function renderConfigEditor(config) {
 async function saveConfig() {
     if (!currentRunDir || !Object.keys(configDirty).length) return;
     try {
-        // Send each changed key one by one (API handles one key at a time)
         for (const [key, value] of Object.entries(configDirty)) {
             const data = await api(`/api/config/${currentRunDir}`, {
                 method: "PUT",
@@ -646,13 +663,13 @@ async function saveConfig() {
         configDirty = {};
         renderConfigEditor(originalConfig);
         configSaveBtn.style.display = "none";
-        addLog("Config saved", "success");
+        addLog("配置已保存", "success");
     } catch (e) {
-        addLog("Failed to save config: " + e.message, "error");
+        addLog("保存配置失败：" + e.message, "error");
     }
 }
 
-// ---- Criteria Editor ----
+// ---- 评审标准编辑器 ----
 
 let criteriaTextarea = null;
 
@@ -669,7 +686,7 @@ async function loadCriteria() {
         criteriaReloadBtn.style.display = "inline-block";
         criteriaValidation.textContent = "";
     } catch (e) {
-        criteriaEditorWrap.innerHTML = `<p class="placeholder-text">Could not load criteria: ${escapeHtml(e.message)}</p>`;
+        criteriaEditorWrap.innerHTML = `<p class="placeholder-text">无法加载评审标准：${escapeHtml(e.message)}</p>`;
         criteriaSaveBtn.style.display = "none";
         criteriaReloadBtn.style.display = "none";
     }
@@ -684,9 +701,9 @@ async function saveCriteria() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content: criteriaTextarea.value }),
         });
-        criteriaValidation.textContent = "Saved!";
+        criteriaValidation.textContent = "已保存！";
         criteriaValidation.className = "validation-msg success";
-        addLog("Criteria saved", "success");
+        addLog("评审标准已保存", "success");
     } catch (e) {
         criteriaValidation.textContent = e.message;
         criteriaValidation.className = "validation-msg error";
@@ -697,13 +714,13 @@ async function reloadCriteria() {
     await loadCriteria();
 }
 
-// ---- Prompts Editor ----
+// ---- 提示词编辑器 ----
 
 const PROMPT_TEMPLATE_VARS = {
-    "extractor_system.txt": "No template variables (system instructions)",
-    "extractor_user.txt": "{domain}, {paper_markdown}, {criterion_name}, {criterion_description}, {scale_definition}",
-    "synthesizer_system.txt": "No template variables (system instructions)",
-    "synthesizer_user.txt": "{paper_title}, {paper_abstract}, {json_dump_of_extractions}, {weights_table}, {calculated_score}, {calculated_recommendation}",
+    "extractor_system.txt": "无模板变量（系统指令）",
+    "extractor_user.txt": "{domain}、{paper_markdown}、{criterion_name}、{criterion_description}、{scale_definition}",
+    "synthesizer_system.txt": "无模板变量（系统指令）",
+    "synthesizer_user.txt": "{paper_title}、{paper_abstract}、{json_dump_of_extractions}、{weights_table}、{calculated_score}、{calculated_recommendation}",
 };
 
 async function loadPrompts() {
@@ -722,7 +739,7 @@ async function loadPrompts() {
             onPromptSelected();
         }
     } catch {
-        promptSelector.innerHTML = '<option value="">Error loading prompts</option>';
+        promptSelector.innerHTML = '<option value="">加载提示词失败</option>';
     }
 }
 
@@ -746,12 +763,11 @@ async function savePrompt() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content: promptsEditor.value }),
         });
-        // Update local cache
         const idx = promptFiles.findIndex(p => p.filename === currentPromptFilename);
         if (idx >= 0) promptFiles[idx].content = promptsEditor.value;
-        promptValidation.textContent = "Saved!";
+        promptValidation.textContent = "已保存！";
         promptValidation.className = "validation-msg success";
-        addLog(`Prompt '${currentPromptFilename}' saved`, "success");
+        addLog(`提示词「${currentPromptFilename}」已保存`, "success");
     } catch (e) {
         promptValidation.textContent = e.message;
         promptValidation.className = "validation-msg error";
@@ -763,7 +779,7 @@ async function reloadPrompt() {
         const data = await api("/api/prompts");
         promptFiles = data.prompts || [];
         onPromptSelected();
-        promptValidation.textContent = "Reloaded from disk";
+        promptValidation.textContent = "已从磁盘重新加载";
         promptValidation.className = "validation-msg success";
     } catch (e) {
         promptValidation.textContent = e.message;
@@ -771,7 +787,7 @@ async function reloadPrompt() {
     }
 }
 
-// ---- Literature Sources Editor ----
+// ---- 文献源编辑器 ----
 
 async function loadSources() {
     try {
@@ -780,7 +796,7 @@ async function loadSources() {
         sourcesValidation.textContent = "";
     } catch {
         sourcesEditor.value = "";
-        sourcesEditor.placeholder = "Could not load literature sources";
+        sourcesEditor.placeholder = "无法加载文献源配置";
     }
 }
 
@@ -792,9 +808,9 @@ async function saveSources() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content: sourcesEditor.value }),
         });
-        sourcesValidation.textContent = "Saved!";
+        sourcesValidation.textContent = "已保存！";
         sourcesValidation.className = "validation-msg success";
-        addLog("Literature sources saved", "success");
+        addLog("文献源配置已保存", "success");
     } catch (e) {
         sourcesValidation.textContent = e.message;
         sourcesValidation.className = "validation-msg error";
@@ -805,7 +821,7 @@ async function reloadSources() {
     await loadSources();
 }
 
-// ---- Model Costs Editor ----
+// ---- 模型费用编辑器 ----
 
 async function loadCosts() {
     try {
@@ -814,7 +830,7 @@ async function loadCosts() {
         costsValidation.textContent = "";
     } catch {
         costsEditor.value = "";
-        costsEditor.placeholder = "Could not load model costs";
+        costsEditor.placeholder = "无法加载模型费用";
     }
 }
 
@@ -826,9 +842,9 @@ async function saveCosts() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content: costsEditor.value }),
         });
-        costsValidation.textContent = "Saved! Models re-registered with litellm.";
+        costsValidation.textContent = "已保存！模型已在 litellm 中重新注册。";
         costsValidation.className = "validation-msg success";
-        addLog("Model costs saved and re-registered", "success");
+        addLog("模型费用已保存并重新注册", "success");
     } catch (e) {
         costsValidation.textContent = e.message;
         costsValidation.className = "validation-msg error";
@@ -840,17 +856,17 @@ async function reloadCosts() {
 }
 
 async function lookupModelCost() {
-    const modelName = prompt("Enter model name (e.g. openai/gpt-5.4-nano, anthropic/claude-sonnet-4-6):");
+    const modelName = prompt("输入模型名称（如 openai/gpt-5.4-nano、anthropic/claude-sonnet-4-6）：");
     if (!modelName) return;
-    costsLookupResult.textContent = "Looking up...";
+    costsLookupResult.textContent = "查询中...";
     try {
         const data = await api(`/api/model-costs/lookup/${encodeURIComponent(modelName)}`);
         costsLookupResult.innerHTML =
-            `<strong>${escapeHtml(data.model)}</strong>: ` +
-            `Input $${data.input_cost_per_million}/M, ` +
-            `Output $${data.output_cost_per_million}/M` +
-            (data.max_input_tokens ? ` | Max in: ${(data.max_input_tokens / 1000).toFixed(0)}K` : "") +
-            (data.max_output_tokens ? `, out: ${(data.max_output_tokens / 1000).toFixed(0)}K` : "");
+            `<strong>${escapeHtml(data.model)}</strong>：` +
+            `输入 $${data.input_cost_per_million}/百万tokens，` +
+            `输出 $${data.output_cost_per_million}/百万tokens` +
+            (data.max_input_tokens ? ` | 最大输入：${(data.max_input_tokens / 1000).toFixed(0)}K` : "") +
+            (data.max_output_tokens ? `，输出：${(data.max_output_tokens / 1000).toFixed(0)}K` : "");
         costsLookupResult.className = "lookup-result success";
     } catch (e) {
         costsLookupResult.textContent = e.message;
@@ -858,7 +874,7 @@ async function lookupModelCost() {
     }
 }
 
-// ---- Judge ----
+// ---- 裁判 ----
 
 async function checkJudgeVerdicts() {
     if (!currentRunDir) return;
@@ -883,13 +899,13 @@ async function startJudge() {
         runStartTime = Date.now();
         connectSSE();
         startElapsedTimer();
-        addLog("Judge pipeline started...", "info");
+        addLog("裁判流程已启动...", "info");
     } catch (e) {
-        const msg = e.message || "Unknown error";
+        const msg = e.message || "未知错误";
         if (msg.includes("2 consolidated") || msg.includes("400")) {
-            addLog("Cannot judge: run reviews with at least 2 different models first, then compare.", "warning");
+            addLog("无法裁决：请先用至少两种不同模型运行评审，然后进行对比。", "warning");
         } else {
-            addLog("Judge failed: " + msg, "error");
+            addLog("裁判失败：" + msg, "error");
         }
         judgeBtn.disabled = false;
     }
@@ -897,19 +913,19 @@ async function startJudge() {
 
 async function showJudgeVerdicts() {
     if (!currentRunDir) return;
-    judgeModalBody.innerHTML = "Loading verdicts...";
+    judgeModalBody.innerHTML = "加载裁决中...";
 
     try {
         const data = await api(`/api/judge/results/${currentRunDir}`);
         const verdicts = data.verdicts || [];
         if (!verdicts.length) {
-            judgeModalBody.innerHTML = '<p class="placeholder-text">No judge verdicts yet. Run "Compare & Judge" first.</p>';
+            judgeModalBody.innerHTML = '<p class="placeholder-text">暂无裁判裁决。请先运行"对比 & 裁决"。</p>';
             judgeModal.style.display = "flex";
             return;
         }
 
         let html = '<table class="results-table judge-table"><thead><tr>';
-        html += "<th>Paper</th><th>Judge Decision</th><th>Winner</th><th>Rationale</th><th>Cost</th>";
+        html += "<th>论文</th><th>裁判决定</th><th>胜出</th><th>理由</th><th>费用</th>";
         html += "</tr></thead><tbody>";
 
         for (const v of verdicts) {
@@ -928,11 +944,11 @@ async function showJudgeVerdicts() {
         judgeModalBody.innerHTML = html;
         judgeModal.style.display = "flex";
     } catch (e) {
-        judgeModalBody.innerHTML = "Error: " + e.message;
+        judgeModalBody.innerHTML = "错误：" + e.message;
     }
 }
 
-// ---- Batch Processing ----
+// ---- 批量处理 ----
 
 async function startBatch() {
     batchBtn.disabled = true;
@@ -943,7 +959,7 @@ async function startBatch() {
     batchPanel.style.display = "block";
     batchDirsList.innerHTML = "";
     batchProgressBar.style.width = "0%";
-    batchText.textContent = "Starting batch...";
+    batchText.textContent = "正在启动批量处理...";
     batchCurrent.textContent = "";
     logContent.innerHTML = "";
 
@@ -955,14 +971,14 @@ async function startBatch() {
         });
         batchDirs = data.dirs || [];
         renderBatchDirsList(batchDirs);
-        batchText.textContent = `0/${batchDirs.length} directories`;
-        addLog(`Batch started: ${batchDirs.length} directories in ${modeSelector.value} mode`, "info");
+        batchText.textContent = `0/${batchDirs.length} 目录`;
+        addLog(`批量处理已启动：${batchDirs.length} 个目录，${modeSelector.value === "standard" ? "标准" : "文献增强"}模式`, "info");
 
         connectBatchSSE();
         runStartTime = Date.now();
         startElapsedTimer();
     } catch (e) {
-        addLog("Batch failed: " + e.message, "error");
+        addLog("批量处理失败：" + e.message, "error");
         finishBatch();
     }
 }
@@ -990,10 +1006,10 @@ function connectBatchSSE() {
         eventSource = null;
         sseReconnectAttempts++;
         if (sseReconnectAttempts <= SSE_MAX_RECONNECT && batchActive) {
-            addLog(`Connection lost — reconnecting (${sseReconnectAttempts}/${SSE_MAX_RECONNECT})...`, "warning");
+            addLog(`连接断开 — 正在重连（${sseReconnectAttempts}/${SSE_MAX_RECONNECT}）...`, "warning");
             setTimeout(() => { if (batchActive) connectBatchSSE(); }, 2000 * sseReconnectAttempts);
         } else if (batchActive) {
-            addLog("Connection lost. Refresh the page to reconnect.", "error");
+            addLog("连接断开。请刷新页面重新连接。", "error");
         }
     };
 }
@@ -1001,17 +1017,17 @@ function connectBatchSSE() {
 async function stopBatch() {
     try {
         await api("/api/batch-stop", { method: "POST" });
-        addLog("Batch cancellation requested...", "warning");
+        addLog("已请求取消批量处理...", "warning");
     } catch (e) {
-        addLog("Stop batch failed: " + e.message, "error");
+        addLog("停止批量处理失败：" + e.message, "error");
     }
 }
 
 function updateBatchProgress(index, total, dirName) {
     const pct = total > 0 ? (100 * index / total) : 0;
     batchProgressBar.style.width = pct + "%";
-    batchText.textContent = `${index}/${total} directories`;
-    batchCurrent.textContent = `Current: ${dirName}`;
+    batchText.textContent = `${index}/${total} 目录`;
+    batchCurrent.textContent = `当前：${dirName}`;
 
     const items = batchDirsList.querySelectorAll(".batch-dir-item");
     items.forEach((item, i) => {
@@ -1033,7 +1049,7 @@ function finishBatch() {
     startBtn.disabled = !currentRunDir;
     batchStopBtn.style.display = "none";
     batchProgressBar.style.width = "100%";
-    batchText.textContent = "Batch complete";
+    batchText.textContent = "批量处理完成";
     batchCurrent.textContent = "";
     if (elapsedInterval) clearInterval(elapsedInterval);
     if (eventSource) { eventSource.close(); eventSource = null; }
@@ -1046,5 +1062,115 @@ function finishBatch() {
     if (currentRunDir) loadResults();
 }
 
-// Init
+// ---- 论文上传 ----
+
+async function refreshPaperCount() {
+    if (!currentRunDir) return;
+    try {
+        const data = await api(`/api/papers/${currentRunDir}`);
+        paperCount.textContent = `📄 ${data.count}`;
+        paperCount.title = data.papers.slice(0, 10).join("\n") + (data.count > 10 ? `\n...还有 ${data.count - 10} 篇` : "");
+    } catch {
+        paperCount.textContent = "📄 ?";
+    }
+}
+
+function handleFileSelect() {
+    const files = uploadInput.files;
+    if (files.length > 0) uploadFiles(files);
+    uploadInput.value = "";
+}
+
+function setupDragDrop() {
+    let dragCounter = 0;
+
+    document.addEventListener("dragenter", (e) => {
+        e.preventDefault();
+        dragCounter++;
+        if (currentRunDir) dropOverlay.classList.add("show");
+    });
+
+    document.addEventListener("dragleave", (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) {
+            dragCounter = 0;
+            dropOverlay.classList.remove("show");
+        }
+    });
+
+    document.addEventListener("dragover", (e) => {
+        e.preventDefault();
+    });
+
+    document.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dragCounter = 0;
+        dropOverlay.classList.remove("show");
+
+        if (!currentRunDir) {
+            showToast("请先选择运行目录", "warning");
+            return;
+        }
+
+        const files = e.dataTransfer.files;
+        if (files.length > 0) uploadFiles(files);
+    });
+}
+
+async function uploadFiles(files) {
+    const formData = new FormData();
+    let validCount = 0;
+    const allowedExts = [".pdf", ".md", ".txt", ".docx"];
+
+    for (const file of files) {
+        const ext = "." + file.name.split(".").pop().toLowerCase();
+        if (allowedExts.includes(ext)) {
+            formData.append("files", file);
+            validCount++;
+        }
+    }
+
+    if (validCount === 0) {
+        showToast("没有支持的文件（仅支持 PDF、MD、TXT、DOCX）", "warning");
+        return;
+    }
+
+    showToast(`正在上传 ${validCount} 个文件...`, "info");
+
+    try {
+        const res = await fetch(`/api/upload/${currentRunDir}`, {
+            method: "POST",
+            body: formData,
+        });
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.detail || "上传失败");
+
+        let msg = `✅ 已上传 ${data.uploaded.length} 个文件`;
+        if (data.skipped.length > 0) {
+            msg += `，${data.skipped.length} 个跳过`;
+        }
+        showToast(msg, "success");
+        addLog(msg, "success");
+
+        await refreshPaperCount();
+    } catch (e) {
+        showToast("上传失败：" + e.message, "error");
+        addLog("上传失败：" + e.message, "error");
+    }
+}
+
+function showToast(message, level = "info") {
+    uploadToastMsg.textContent = message;
+    uploadToast.className = `toast toast-${level}`;
+    uploadToast.style.display = "block";
+
+    if (uploadToast._timeout) clearTimeout(uploadToast._timeout);
+    uploadToast._timeout = setTimeout(() => {
+        uploadToast.style.display = "none";
+    }, 3000);
+}
+
+// 初始化
 document.addEventListener("DOMContentLoaded", init);
